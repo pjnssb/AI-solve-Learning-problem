@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import {
   addCustomProvider,
   addModelToProvider,
@@ -10,6 +10,7 @@ import {
   updateProviderConfig,
   useProviderStore,
   type ApiProtocol,
+  type ModelOption,
 } from '../../services/tutor/providers.js'
 import { setApiKey } from '../../services/settings.js'
 import { Button } from '../base/Button.js'
@@ -17,7 +18,8 @@ import styles from './ProvidersPanel.module.css'
 
 /**
  * 设置页「多服务商与模型配置」面板：
- * 支持 DeepSeek / OpenAI / Anthropic Claude / Google Gemini / OpenRouter / 通义千问 / Ollama 以及任意自定义兼容端点。
+ * 支持 DeepSeek / OpenAI / Anthropic Claude / Google Gemini / OpenRouter / 通义千问 / Ollama 以及任意自定义兼容端点；
+ * 添加自定义网关时即可直接一键拉取 /models 列表并勾选/搜索模型。
  */
 export const ProvidersPanel = () => {
   const providers = useProviderStore((state) => state.providers)
@@ -26,29 +28,32 @@ export const ProvidersPanel = () => {
 
   const [selectedId, setSelectedId] = useState(activeProviderId)
   const [newModelId, setNewModelId] = useState('')
+  const [modelFilter, setModelFilter] = useState('')
   const [fetching, setFetching] = useState(false)
   const [statusMsg, setStatusMsg] = useState<{ text: string; error?: boolean } | null>(null)
   const [addingCustom, setAddingCustom] = useState(false)
   const [customForm, setCustomForm] = useState({
     name: '',
     protocol: 'openai' as Exclude<ApiProtocol, 'demo'>,
-    baseUrl: 'https://api.openai.com/v1',
+    baseUrl: '',
     apiKey: '',
-    modelId: 'gpt-4o',
+    modelId: '',
   })
+  const [customFetchedModels, setCustomFetchedModels] = useState<ModelOption[]>([])
+  const [customModelFilter, setCustomModelFilter] = useState('')
 
   const current = providers.find((p) => p.id === selectedId) ?? providers[0]
 
-  const onFetchModels = async () => {
+  const onFetchCurrentModels = async () => {
     setFetching(true)
     setStatusMsg(null)
     try {
       const models = await fetchProviderModels(current)
       if (models.length === 0) {
-        setStatusMsg({ text: '接口返回成功，但未检测到可用模型列表。' })
+        setStatusMsg({ text: '接口连接成功，但未返回任何模型，可直接在下方手动添加模型 ID。' })
       } else {
         updateProviderConfig(current.id, { models })
-        setStatusMsg({ text: `已成功拉取 ${models.length} 个可用模型并更新列表。` })
+        setStatusMsg({ text: `已成功从网关拉取 ${models.length} 个可用模型并更新列表。` })
       }
     } catch (error) {
       setStatusMsg({
@@ -59,6 +64,59 @@ export const ProvidersPanel = () => {
       setFetching(false)
     }
   }
+
+  const onFetchCustomModels = async () => {
+    if (!customForm.baseUrl.trim()) {
+      setStatusMsg({
+        text: '请先填写自定义网关的 API Base URL（例如 https://your-gateway.com/v1）',
+        error: true,
+      })
+      return
+    }
+    setFetching(true)
+    setStatusMsg(null)
+    try {
+      const models = await fetchProviderModels({
+        protocol: customForm.protocol,
+        baseUrl: customForm.baseUrl,
+        apiKey: customForm.apiKey,
+      })
+      setCustomFetchedModels(models)
+      if (models.length === 0) {
+        setStatusMsg({ text: '接口返回成功，但列表为空，请手动输入默认模型 ID。' })
+      } else {
+        setCustomForm((prev) => ({ ...prev, modelId: prev.modelId.trim() || models[0].id }))
+        setStatusMsg({
+          text: `成功拉取 ${models.length} 个模型！点击下方任意模型可设为默认，保存后全部导入。`,
+        })
+      }
+    } catch (error) {
+      setStatusMsg({
+        text: `拉取模型失败：${error instanceof Error ? error.message : String(error)}`,
+        error: true,
+      })
+    } finally {
+      setFetching(false)
+    }
+  }
+
+  const filteredCurrentModels = useMemo(() => {
+    const q = modelFilter.trim().toLowerCase()
+    return q
+      ? current.models.filter(
+          (m) => m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q)
+        )
+      : current.models
+  }, [current.models, modelFilter])
+
+  const filteredCustomModels = useMemo(() => {
+    const q = customModelFilter.trim().toLowerCase()
+    return q
+      ? customFetchedModels.filter(
+          (m) => m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q)
+        )
+      : customFetchedModels
+  }, [customFetchedModels, customModelFilter])
 
   return (
     <div className={styles.wrap}>
@@ -77,6 +135,7 @@ export const ProvidersPanel = () => {
               onClick={() => {
                 setAddingCustom(false)
                 setSelectedId(p.id)
+                setModelFilter('')
                 setStatusMsg(null)
               }}
             >
@@ -99,12 +158,12 @@ export const ProvidersPanel = () => {
 
       {addingCustom ? (
         <div className={styles.card}>
-          <div className={styles.cardTitle}>添加自定义 AI 服务商 / 聚合代理</div>
+          <div className={styles.cardTitle}>添加自定义 AI 服务商 / 聚合网关</div>
           <div className={styles.field}>
             <label className={styles.fieldLabel}>服务商名称</label>
             <input
               className={styles.input}
-              placeholder="例如：硅基流动 / OneAPI / 公司内网网关"
+              placeholder="例如：硅基流动 / OneAPI / NewAPI / 自建网关"
               value={customForm.name}
               onChange={(event) => setCustomForm((prev) => ({ ...prev, name: event.target.value }))}
             />
@@ -121,13 +180,13 @@ export const ProvidersPanel = () => {
                 }))
               }
             >
-              <option value="openai">OpenAI 兼容协议 (/chat/completions)</option>
-              <option value="anthropic">Anthropic 兼容协议 (/messages)</option>
+              <option value="openai">OpenAI 兼容协议 (/v1/chat/completions)</option>
+              <option value="anthropic">Anthropic 兼容协议 (/v1/messages)</option>
               <option value="gemini">Google Gemini 原生协议</option>
             </select>
           </div>
           <div className={styles.field}>
-            <label className={styles.fieldLabel}>API Base URL</label>
+            <label className={styles.fieldLabel}>API Base URL（支持自动识别 /v1 后缀）</label>
             <input
               className={styles.input}
               placeholder="https://api.example.com/v1"
@@ -150,31 +209,108 @@ export const ProvidersPanel = () => {
             />
           </div>
           <div className={styles.field}>
-            <label className={styles.fieldLabel}>默认模型 ID</label>
+            <div className={styles.fieldHeader}>
+              <label className={styles.fieldLabel}>模型列表 / 默认模型 ID</label>
+              <Button
+                variant="outlined"
+                size="s"
+                disabled={fetching}
+                onClick={() => void onFetchCustomModels()}
+              >
+                {fetching ? '正在拉取模型...' : '拉取网关模型列表'}
+              </Button>
+            </div>
             <input
               className={styles.input}
-              placeholder="例如：deepseek-ai/DeepSeek-V3 或 gpt-4o"
+              placeholder="点击右上角一键拉取，或手动输入模型 ID（如 gpt-4o / deepseek-v3）"
               value={customForm.modelId}
               onChange={(event) =>
                 setCustomForm((prev) => ({ ...prev, modelId: event.target.value }))
               }
             />
+            {customFetchedModels.length > 0 ? (
+              <div className={styles.fetchedBox}>
+                {customFetchedModels.length > 10 ? (
+                  <input
+                    className={styles.input}
+                    placeholder={`在 ${customFetchedModels.length} 个已拉取模型中搜索...`}
+                    value={customModelFilter}
+                    onChange={(event) => setCustomModelFilter(event.target.value)}
+                  />
+                ) : null}
+                <div className={styles.modelTagsScrollable}>
+                  {filteredCustomModels.map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      className={clsx(
+                        styles.modelChip,
+                        customForm.modelId === m.id && styles.modelChipSelected
+                      )}
+                      onClick={() => setCustomForm((prev) => ({ ...prev, modelId: m.id }))}
+                    >
+                      {m.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </div>
+
+          {statusMsg ? (
+            <div className={clsx(styles.statusText, statusMsg.error && styles.statusError)}>
+              {statusMsg.text}
+            </div>
+          ) : null}
+
           <div className={styles.row}>
             <Button
               variant="primary"
               size="s"
               onClick={() => {
-                const created = addCustomProvider(customForm)
-                selectProviderModel(created.id, created.models[0].id)
+                if (!customForm.baseUrl.trim()) {
+                  setStatusMsg({ text: '请先填写 API Base URL', error: true })
+                  return
+                }
+                const chosenId = customForm.modelId.trim() || customFetchedModels[0]?.id || 'gpt-4o'
+                const mergedModels =
+                  customFetchedModels.length > 0
+                    ? customFetchedModels.some((m) => m.id === chosenId)
+                      ? customFetchedModels
+                      : [{ id: chosenId, name: chosenId }, ...customFetchedModels]
+                    : [{ id: chosenId, name: chosenId }]
+                const created = addCustomProvider({
+                  ...customForm,
+                  modelId: chosenId,
+                  models: mergedModels,
+                })
+                selectProviderModel(created.id, chosenId)
                 setSelectedId(created.id)
+                setCustomForm({
+                  name: '',
+                  protocol: 'openai',
+                  baseUrl: '',
+                  apiKey: '',
+                  modelId: '',
+                })
+                setCustomFetchedModels([])
+                setCustomModelFilter('')
                 setAddingCustom(false)
-                setStatusMsg({ text: `已添加并切换到「${created.name}」` })
+                setStatusMsg({
+                  text: `已保存「${created.name}」（共 ${created.models.length} 个模型）并切换为当前模型 ${chosenId}`,
+                })
               }}
             >
               保存并启用
             </Button>
-            <Button variant="outlined" size="s" onClick={() => setAddingCustom(false)}>
+            <Button
+              variant="outlined"
+              size="s"
+              onClick={() => {
+                setAddingCustom(false)
+                setStatusMsg(null)
+              }}
+            >
               取消
             </Button>
           </div>
@@ -194,6 +330,37 @@ export const ProvidersPanel = () => {
             </div>
           ) : (
             <>
+              {current.isCustom ? (
+                <div className={styles.row}>
+                  <div className={clsx(styles.field, styles.flex1)}>
+                    <label className={styles.fieldLabel}>服务商名称</label>
+                    <input
+                      className={styles.input}
+                      value={current.name}
+                      onChange={(event) =>
+                        updateProviderConfig(current.id, { name: event.target.value })
+                      }
+                    />
+                  </div>
+                  <div className={clsx(styles.field, styles.flex1)}>
+                    <label className={styles.fieldLabel}>接口协议</label>
+                    <select
+                      className={styles.select}
+                      value={current.protocol}
+                      onChange={(event) =>
+                        updateProviderConfig(current.id, {
+                          protocol: event.target.value as Exclude<ApiProtocol, 'demo'>,
+                        })
+                      }
+                    >
+                      <option value="openai">OpenAI 兼容</option>
+                      <option value="anthropic">Anthropic 兼容</option>
+                      <option value="gemini">Gemini 原生</option>
+                    </select>
+                  </div>
+                </div>
+              ) : null}
+
               <div className={styles.field}>
                 <label className={styles.fieldLabel}>API Base URL</label>
                 <input
@@ -224,9 +391,31 @@ export const ProvidersPanel = () => {
               </div>
 
               <div className={styles.field}>
-                <label className={styles.fieldLabel}>可用模型（点击即可设为当前默认模型）</label>
-                <div className={styles.modelTags}>
-                  {current.models.map((m) => {
+                <div className={styles.fieldHeader}>
+                  <label className={styles.fieldLabel}>
+                    可用模型（共 {current.models.length} 个，点击切换）
+                  </label>
+                  {current.protocol !== 'deepseek-native' ? (
+                    <Button
+                      variant="outlined"
+                      size="s"
+                      disabled={fetching}
+                      onClick={() => void onFetchCurrentModels()}
+                    >
+                      {fetching ? '正在拉取...' : '拉取 /models'}
+                    </Button>
+                  ) : null}
+                </div>
+                {current.models.length > 10 ? (
+                  <input
+                    className={styles.input}
+                    placeholder="搜索当前服务商下的模型..."
+                    value={modelFilter}
+                    onChange={(event) => setModelFilter(event.target.value)}
+                  />
+                ) : null}
+                <div className={styles.modelTagsScrollable}>
+                  {filteredCurrentModels.map((m) => {
                     const isCurrent = activeProviderId === current.id && activeModelId === m.id
                     return (
                       <div
@@ -279,16 +468,6 @@ export const ProvidersPanel = () => {
                 >
                   添加模型
                 </Button>
-                {current.protocol !== 'deepseek-native' ? (
-                  <Button
-                    variant="outlined"
-                    size="s"
-                    disabled={fetching}
-                    onClick={() => void onFetchModels()}
-                  >
-                    {fetching ? '拉取中...' : '拉取 /models'}
-                  </Button>
-                ) : null}
               </div>
 
               <div className={styles.row}>

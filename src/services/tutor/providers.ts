@@ -350,9 +350,14 @@ export const addCustomProvider = (input: {
   baseUrl: string
   apiKey: string
   modelId: string
+  models?: ModelOption[]
 }) => {
   const id = `custom-${createId().slice(0, 8)}`
-  const modelId = input.modelId.trim() || 'gpt-4o'
+  const fallbackModelId = input.modelId.trim() || 'gpt-4o'
+  const models =
+    input.models && input.models.length > 0
+      ? input.models
+      : [{ id: fallbackModelId, name: fallbackModelId }]
   const created: ProviderConfig = {
     id,
     name: input.name.trim() || '自定义服务商',
@@ -361,7 +366,7 @@ export const addCustomProvider = (input: {
     apiKey: input.apiKey.trim(),
     enabled: true,
     isCustom: true,
-    models: [{ id: modelId, name: modelId }],
+    models,
   }
   const next = [...useProviderStore.getState().providers, created]
   persistProviders(next)
@@ -426,49 +431,155 @@ export const syncDeepseekApiKey = (apiKey: string) => {
   useProviderStore.setState({ providers: next })
 }
 
-/** 从 OpenAI 兼容服务商自动拉取可用模型列表（GET /models） */
+type FetchModelsInput = Pick<ProviderConfig, 'protocol' | 'baseUrl' | 'apiKey'>
+
+/** 剥离用户误粘贴的 /chat/completions、/messages、/models 后缀，得到干净的 API 根路径 */
+const normalizeModelsBase = (raw: string): string =>
+  raw
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/(chat\/completions|completions|messages|models)$/i, '')
+
+const extractModelOptions = (payload: unknown, isGemini: boolean): ModelOption[] => {
+  const rawList: unknown[] = Array.isArray(payload)
+    ? payload
+    : typeof payload === 'object' && payload !== null
+      ? Array.isArray((payload as { data?: unknown }).data)
+        ? (payload as { data: unknown[] }).data
+        : Array.isArray((payload as { models?: unknown }).models)
+          ? (payload as { models: unknown[] }).models
+          : []
+      : []
+
+  const seen = new Set<string>()
+  const result: ModelOption[] = []
+  for (const item of rawList) {
+    let id = ''
+    let name = ''
+    if (typeof item === 'string') {
+      id = item.trim()
+      name = id
+    } else if (typeof item === 'object' && item !== null) {
+      const rec = item as Record<string, unknown>
+      const rawId =
+        typeof rec.id === 'string'
+          ? rec.id
+          : typeof rec.name === 'string'
+            ? rec.name
+            : typeof rec.model === 'string'
+              ? rec.model
+              : ''
+      id = rawId.trim().replace(/^models\//, '')
+      name =
+        (typeof rec.display_name === 'string' && rec.display_name.trim()) ||
+        (typeof rec.displayName === 'string' && rec.displayName.trim()) ||
+        id
+    }
+    if (!id || seen.has(id)) {
+      continue
+    }
+    if (isGemini && !id.toLowerCase().includes('gemini') && !id.toLowerCase().includes('gemma')) {
+      continue
+    }
+    seen.add(id)
+    result.push({ id, name })
+  }
+  return result.slice(0, 200)
+}
+
+/**
+ * 从 OpenAI / Anthropic / Gemini 及各类自定义聚合网关（OneAPI / NewAPI / 硅基流动等）拉取可用模型列表。
+ * 自动兼容：是否包含 /v1、误粘贴完整 /chat/completions 地址、Bearer / x-api-key 鉴权及多种 JSON 返回结构。
+ */
 export const fetchProviderModels = async (
-  provider: ProviderConfig,
+  provider: FetchModelsInput,
   signal?: AbortSignal
 ): Promise<ModelOption[]> => {
-  const base = provider.baseUrl.trim().replace(/\/+$/, '')
+  const base = normalizeModelsBase(provider.baseUrl)
   if (!base) {
     throw new Error('请先填写 API Base URL')
   }
+  const apiKey = provider.apiKey.trim()
+
   if (provider.protocol === 'gemini') {
-    const url = `${base}/models?key=${encodeURIComponent(provider.apiKey)}`
-    const response = await fetch(url, { signal })
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`)
+    const candidates = [
+      `${base}/models${apiKey ? `?key=${encodeURIComponent(apiKey)}` : ''}`,
+      ...(!/\/v1beta$/i.test(base)
+        ? [`${base}/v1beta/models${apiKey ? `?key=${encodeURIComponent(apiKey)}` : ''}`]
+        : []),
+    ]
+    let lastError: Error | null = null
+    for (const url of candidates) {
+      try {
+        const response = await fetch(url, { signal })
+        if (!response.ok) {
+          lastError = new Error(`HTTP ${response.status}`)
+          continue
+        }
+        const models = extractModelOptions(await response.json(), true)
+        if (models.length > 0) {
+          return models
+        }
+      } catch (error) {
+        if (signal?.aborted) {
+          throw error
+        }
+        lastError = error instanceof Error ? error : new Error(String(error))
+      }
     }
-    const data = (await response.json()) as {
-      models?: { name?: string; displayName?: string }[]
-    }
-    return (data.models ?? [])
-      .map((item) => {
-        const id = (item.name ?? '').replace(/^models\//, '')
-        return { id, name: item.displayName || id }
-      })
-      .filter((item) => item.id.includes('gemini'))
-      .slice(0, 30)
+    throw new Error(
+      lastError?.message === 'Failed to fetch'
+        ? '网络请求失败或被浏览器 CORS 拦截，请检查 Base URL 或网关跨域配置'
+        : lastError?.message || '未能拉取到 Gemini 模型列表'
+    )
   }
 
-  const headers: Record<string, string> = {}
+  // 构建候选 /models URL：若未带 /v1，自动顺延尝试 /v1/models
+  const urlCandidates = [`${base}/models`]
+  if (!/\/v\d+(?:alpha|beta)?$/i.test(base)) {
+    urlCandidates.push(`${base}/v1/models`)
+  }
+
+  // 构建鉴权头方案：Anthropic 兼容网关优先 x-api-key，若失败再兜底 Bearer（兼容 OneAPI/NewAPI）
+  const headerVariants: Record<string, string>[] = []
   if (provider.protocol === 'anthropic') {
-    headers['x-api-key'] = provider.apiKey
-    headers['anthropic-version'] = '2023-06-01'
-    headers['anthropic-dangerous-direct-browser-access'] = 'true'
-  } else if (provider.apiKey) {
-    headers.Authorization = `Bearer ${provider.apiKey}`
+    headerVariants.push({
+      ...(apiKey ? { 'x-api-key': apiKey } : {}),
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    })
+    if (apiKey) {
+      headerVariants.push({ Authorization: `Bearer ${apiKey}` })
+    }
+  } else {
+    headerVariants.push(apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
   }
 
-  const response = await fetch(`${base}/models`, { headers, signal })
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`)
+  let lastError: Error | null = null
+  for (const url of urlCandidates) {
+    for (const headers of headerVariants) {
+      try {
+        const response = await fetch(url, { headers, signal })
+        if (!response.ok) {
+          lastError = new Error(`HTTP ${response.status} (${url})`)
+          continue
+        }
+        const payload: unknown = await response.json()
+        return extractModelOptions(payload, false)
+      } catch (error) {
+        if (signal?.aborted) {
+          throw error
+        }
+        lastError = error instanceof Error ? error : new Error(String(error))
+      }
+    }
   }
-  const payload = (await response.json()) as { data?: { id?: string; display_name?: string }[] }
-  return (payload.data ?? [])
-    .filter((item): item is { id: string; display_name?: string } => typeof item.id === 'string')
-    .map((item) => ({ id: item.id, name: item.display_name || item.id }))
-    .slice(0, 60)
+
+  const msg = lastError?.message ?? '未知错误'
+  if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+    throw new Error(
+      '请求被浏览器拦截或无法连接（常见原因：该自定义网关未开启浏览器 CORS 跨域头，或 Base URL 填写有误；你仍可手动输入模型 ID 使用）'
+    )
+  }
+  throw new Error(msg)
 }

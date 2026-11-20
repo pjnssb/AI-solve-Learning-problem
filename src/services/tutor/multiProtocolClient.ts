@@ -44,6 +44,23 @@ const readHttpError = async (response: Response): Promise<ApiError> => {
   return new ApiError('http', message, response.status)
 }
 
+/** 解析网关地址：若用户只填了纯域名（如 https://api.example.com），自动补全 /v1；若已含路径或完整端点则原样保留 */
+const resolveEndpointUrl = (rawBase: string, endpointSuffix: string): string => {
+  const base = rawBase.trim().replace(/\/+$/, '')
+  if (base.endsWith(endpointSuffix)) {
+    return base
+  }
+  try {
+    const parsed = new URL(base)
+    if (parsed.pathname === '' || parsed.pathname === '/') {
+      return `${base}/v1${endpointSuffix}`
+    }
+  } catch {
+    // 忽略非标准相对路径
+  }
+  return `${base}${endpointSuffix}`
+}
+
 /**
  * OpenAI 兼容协议流式请求（兼容 OpenAI / DeepSeek / OpenRouter / 通义千问 / 硅基流动 / 本地 Ollama 等）。
  * 同时支持 DeepSeek-R1 / QwQ 的 reasoning_content 思考流，以及标准 content 正文流。
@@ -56,8 +73,7 @@ async function* streamOpenAiCompatible(
   question: UserMessage,
   signal: AbortSignal
 ): AsyncGenerator<MessageStreamEvent> {
-  const base = provider.baseUrl.trim().replace(/\/+$/, '')
-  const url = base.endsWith('/chat/completions') ? base : `${base}/chat/completions`
+  const url = resolveEndpointUrl(provider.baseUrl, '/chat/completions')
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Accept: 'text/event-stream',
@@ -192,8 +208,7 @@ async function* streamAnthropicStandard(
   thinking: boolean,
   signal: AbortSignal
 ): AsyncGenerator<MessageStreamEvent> {
-  const base = provider.baseUrl.trim().replace(/\/+$/, '')
-  const url = base.endsWith('/messages') ? base : `${base}/messages`
+  const url = resolveEndpointUrl(provider.baseUrl, '/messages')
   const messages = buildSimpleMessages(systemPrompt, history, question)
     .filter((m) => m.role !== 'system')
     .map((m) => ({ role: m.role, content: m.content }))
