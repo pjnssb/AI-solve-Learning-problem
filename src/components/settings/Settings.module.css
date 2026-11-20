@@ -1,7 +1,8 @@
 .dialog {
   --modal-header-gap: 7px;
-  width: 760px;
-  height: 500px;
+  width: 800px;
+  max-width: calc(100vw - 24px);
+  height: 600px;
   max-height: calc(100vh - 32px);
   padding: 19px 24px 22px;
 }

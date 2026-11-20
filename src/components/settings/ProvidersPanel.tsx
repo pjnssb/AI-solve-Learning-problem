@@ -158,35 +158,49 @@ export const ProvidersPanel = () => {
 
       {addingCustom ? (
         <div className={styles.card}>
-          <div className={styles.cardTitle}>添加自定义 AI 服务商 / 聚合网关</div>
-          <div className={styles.field}>
-            <label className={styles.fieldLabel}>服务商名称</label>
-            <input
-              className={styles.input}
-              placeholder="例如：硅基流动 / OneAPI / NewAPI / 自建网关"
-              value={customForm.name}
-              onChange={(event) => setCustomForm((prev) => ({ ...prev, name: event.target.value }))}
-            />
-          </div>
-          <div className={styles.field}>
-            <label className={styles.fieldLabel}>接口协议</label>
-            <select
-              className={styles.select}
-              value={customForm.protocol}
-              onChange={(event) =>
-                setCustomForm((prev) => ({
-                  ...prev,
-                  protocol: event.target.value as Exclude<ApiProtocol, 'demo'>,
-                }))
-              }
+          <div className={styles.cardHeader}>
+            <div className={styles.cardTitle}>添加自定义 AI 服务商 / 聚合网关</div>
+            <Button
+              variant="primary"
+              size="s"
+              disabled={fetching}
+              onClick={() => void onFetchCustomModels()}
             >
-              <option value="openai">OpenAI 兼容协议 (/v1/chat/completions)</option>
-              <option value="anthropic">Anthropic 兼容协议 (/v1/messages)</option>
-              <option value="gemini">Google Gemini 原生协议</option>
-            </select>
+              {fetching ? '正在拉取模型...' : '一键拉取模型列表'}
+            </Button>
+          </div>
+          <div className={styles.row}>
+            <div className={clsx(styles.field, styles.flex1)}>
+              <label className={styles.fieldLabel}>服务商名称</label>
+              <input
+                className={styles.input}
+                placeholder="例如：硅基流动 / OneAPI / NewAPI"
+                value={customForm.name}
+                onChange={(event) =>
+                  setCustomForm((prev) => ({ ...prev, name: event.target.value }))
+                }
+              />
+            </div>
+            <div className={clsx(styles.field, styles.flex1)}>
+              <label className={styles.fieldLabel}>接口协议</label>
+              <select
+                className={styles.select}
+                value={customForm.protocol}
+                onChange={(event) =>
+                  setCustomForm((prev) => ({
+                    ...prev,
+                    protocol: event.target.value as Exclude<ApiProtocol, 'demo'>,
+                  }))
+                }
+              >
+                <option value="openai">OpenAI 兼容 (/v1/chat/completions)</option>
+                <option value="anthropic">Anthropic 兼容 (/v1/messages)</option>
+                <option value="gemini">Google Gemini 原生协议</option>
+              </select>
+            </div>
           </div>
           <div className={styles.field}>
-            <label className={styles.fieldLabel}>API Base URL（支持自动识别 /v1 后缀）</label>
+            <label className={styles.fieldLabel}>API Base URL（支持自动补全 /v1）</label>
             <input
               className={styles.input}
               placeholder="https://api.example.com/v1"
@@ -210,19 +224,24 @@ export const ProvidersPanel = () => {
           </div>
           <div className={styles.field}>
             <div className={styles.fieldHeader}>
-              <label className={styles.fieldLabel}>模型列表 / 默认模型 ID</label>
+              <label className={styles.fieldLabel}>
+                默认模型 ID
+                {customFetchedModels.length > 0
+                  ? `（已拉取 ${customFetchedModels.length} 个）`
+                  : ''}
+              </label>
               <Button
                 variant="outlined"
                 size="s"
                 disabled={fetching}
                 onClick={() => void onFetchCustomModels()}
               >
-                {fetching ? '正在拉取模型...' : '拉取网关模型列表'}
+                {fetching ? '正在拉取...' : '拉取 /models'}
               </Button>
             </div>
             <input
               className={styles.input}
-              placeholder="点击右上角一键拉取，或手动输入模型 ID（如 gpt-4o / deepseek-v3）"
+              placeholder="点击「一键拉取模型列表」，或手动输入模型 ID（如 gpt-4o / deepseek-v3）"
               value={customForm.modelId}
               onChange={(event) =>
                 setCustomForm((prev) => ({ ...prev, modelId: event.target.value }))
