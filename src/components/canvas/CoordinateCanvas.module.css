@@ -1,0 +1,369 @@
+.container {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--dsw-alias-bg-base);
+  user-select: none;
+}
+
+.stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+}
+
+.stageDragging {
+  cursor: grabbing;
+}
+
+.svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.gridLine {
+  stroke: var(--dsw-alias-border-l2);
+  stroke-width: 1;
+  opacity: 0.45;
+}
+
+.axisLine {
+  stroke: var(--dsw-alias-label-secondary);
+  stroke-width: 1.5;
+}
+
+.axisArrow {
+  fill: var(--dsw-alias-label-secondary);
+}
+
+.tickText {
+  fill: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  font-family: var(--dsw-font-family);
+}
+
+.axisLabel {
+  fill: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  font-style: italic;
+}
+
+.pointLabel {
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--dsw-font-family);
+  paint-order: stroke;
+  stroke: var(--dsw-alias-bg-base);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+
+.auxLabel {
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--dsw-font-family);
+  paint-order: stroke;
+  stroke: var(--dsw-alias-bg-base);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+
+.lengthTag {
+  font-size: 11px;
+  font-weight: 500;
+  fill: var(--dsw-alias-label-secondary);
+  paint-order: stroke;
+  stroke: var(--dsw-alias-bg-base);
+  stroke-width: 3.5px;
+  stroke-linejoin: round;
+}
+
+.movingPointHandle {
+  cursor: grab;
+}
+
+.movingPointHandle:active {
+  cursor: grabbing;
+}
+
+@keyframes pulseRing {
+  0% {
+    transform: scale(0.95);
+    opacity: 0.55;
+  }
+  70% {
+    transform: scale(1.65);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.65);
+    opacity: 0;
+  }
+}
+
+.pulseHalo {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: pulseRing 2s ease-out infinite;
+}
+
+@keyframes dashAppear {
+  from {
+    stroke-dashoffset: 48;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.auxLine {
+  stroke-dasharray: 6 5;
+  animation: dashAppear 0.55s ease-out;
+}
+
+.hudTopLeft {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+  max-width: calc(100% - 120px);
+}
+
+.boardTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background-color: color-mix(in srgb, var(--dsw-alias-bg-base) 86%, transparent);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--dsw-alias-border-l2);
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.measureList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.measurePill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 10px;
+  background-color: color-mix(in srgb, var(--dsw-alias-bg-base) 90%, transparent);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--dsw-alias-border-l2);
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease;
+}
+
+.measureOptimal {
+  border-color: var(--dsw-static-green-500);
+  background-color: color-mix(in srgb, var(--dsw-static-green-500) 12%, var(--dsw-alias-bg-base));
+}
+
+.measureDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.measureValue {
+  font-weight: 700;
+  font-family: var(--ds-font-family-code);
+}
+
+.optimalBadge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background-color: var(--dsw-static-green-500);
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.hudTopRight {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.zoomBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background-color: color-mix(in srgb, var(--dsw-alias-bg-base) 90%, transparent);
+  backdrop-filter: blur(8px);
+  color: var(--dsw-alias-label-primary);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.zoomBtn:hover {
+  background-color: var(--dsw-alias-interactive-bg-hover);
+}
+
+.cursorReadout {
+  position: absolute;
+  bottom: 10px;
+  left: 12px;
+  z-index: 4;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background-color: color-mix(in srgb, var(--dsw-alias-bg-base) 84%, transparent);
+  border: 1px solid var(--dsw-alias-border-l1);
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  font-family: var(--ds-font-family-code);
+  pointer-events: none;
+}
+
+.motionDock {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  background-color: var(--dsw-specific-sidebar-fill);
+}
+
+.motionRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.playBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  border: none;
+  background-color: var(--dsw-alias-brand-primary);
+  color: #ffffff;
+  font-size: 13px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background-color 0.15s ease,
+    transform 0.1s ease;
+}
+
+.playBtn:hover {
+  background-color: var(--dsw-alias-button-primary-hover);
+}
+
+.playBtn:active {
+  transform: scale(0.95);
+}
+
+.sliderWrap {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sliderHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.sliderCoords {
+  font-family: var(--ds-font-family-code);
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+
+.slider {
+  width: 100%;
+  accent-color: var(--dsw-alias-brand-primary);
+  cursor: pointer;
+}
+
+.speedBtn {
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background-color: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.speedBtn:hover {
+  background-color: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.dragTip {
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.emptyState {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 32px;
+  text-align: center;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.emptyTitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.emptyDesc {
+  max-width: 300px;
+  font-size: 13px;
+  line-height: 20px;
+}

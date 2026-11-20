@@ -1,0 +1,252 @@
+.container {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--dsw-alias-bg-base);
+  user-select: none;
+}
+
+.stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+}
+
+.stageDragging {
+  cursor: grabbing;
+}
+
+.svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+@keyframes nodeEnter {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.nodeGroup {
+  animation: nodeEnter 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.nodeCard {
+  fill: var(--dsw-alias-bg-layer-2);
+  stroke: var(--dsw-alias-border-l3);
+  stroke-width: 1.5;
+  transition:
+    stroke 0.2s ease,
+    fill 0.2s ease;
+}
+
+.nodeStart {
+  fill: color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, var(--dsw-alias-bg-base));
+  stroke: var(--dsw-alias-brand-primary);
+  stroke-width: 1.6;
+}
+
+.nodeDecision {
+  fill: color-mix(in srgb, var(--dsw-static-amber-500) 10%, var(--dsw-alias-bg-base));
+  stroke: var(--dsw-static-amber-500);
+  stroke-width: 1.6;
+}
+
+.nodeQuestion {
+  fill: color-mix(in srgb, var(--dsw-static-amber-400) 10%, var(--dsw-alias-bg-base));
+  stroke: var(--dsw-static-amber-500);
+  stroke-width: 1.6;
+  stroke-dasharray: 6 4;
+}
+
+.nodeGrammar {
+  fill: color-mix(in srgb, var(--dsw-alias-brand-primary) 8%, var(--dsw-alias-bg-base));
+  stroke: var(--dsw-alias-brand-primary);
+  stroke-width: 1.5;
+}
+
+.nodeResult {
+  fill: color-mix(in srgb, var(--dsw-static-green-500) 12%, var(--dsw-alias-bg-base));
+  stroke: var(--dsw-static-green-500);
+  stroke-width: 1.8;
+}
+
+.nodeSolved {
+  fill: color-mix(in srgb, var(--dsw-static-green-500) 9%, var(--dsw-alias-bg-base));
+  stroke: var(--dsw-static-green-500);
+}
+
+.nodeHighlighted {
+  stroke-width: 2.4;
+  filter: drop-shadow(0 4px 14px rgba(57, 100, 254, 0.16));
+}
+
+.stepBadgeBg {
+  fill: var(--dsw-alias-interactive-bg-hover);
+}
+
+.stepBadgeText {
+  fill: var(--dsw-alias-label-tertiary);
+  font-size: 10px;
+  font-weight: 600;
+  font-family: var(--dsw-font-family);
+}
+
+.nodeTitle {
+  fill: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: var(--dsw-font-family);
+}
+
+.nodeSubtitle {
+  fill: var(--dsw-alias-label-secondary);
+  font-size: 11.5px;
+  font-family: var(--dsw-font-family);
+}
+
+.edgePath {
+  fill: none;
+  stroke: var(--dsw-alias-label-tertiary);
+  stroke-width: 1.7;
+  transition: stroke 0.2s ease;
+}
+
+.edgeDashed {
+  stroke-dasharray: 5 4;
+  stroke: var(--dsw-static-amber-500);
+}
+
+.edgeLabelBg {
+  fill: var(--dsw-alias-bg-base);
+  stroke: var(--dsw-alias-border-l2);
+  stroke-width: 1;
+}
+
+.edgeLabelText {
+  fill: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  font-family: var(--dsw-font-family);
+}
+
+.hudTopLeft {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.boardTitle {
+  padding: 5px 10px;
+  border-radius: 999px;
+  background-color: color-mix(in srgb, var(--dsw-alias-bg-base) 88%, transparent);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--dsw-alias-border-l2);
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.hudTopRight {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.toolBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  padding: 0 9px;
+  border-radius: 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background-color: color-mix(in srgb, var(--dsw-alias-bg-base) 90%, transparent);
+  backdrop-filter: blur(8px);
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.toolBtn:hover {
+  background-color: var(--dsw-alias-interactive-bg-hover);
+}
+
+.legendBar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  background-color: var(--dsw-specific-sidebar-fill);
+  font-size: 11.5px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.legendItems {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.legendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.legendDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.emptyState {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 32px;
+  text-align: center;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.emptyTitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.emptyDesc {
+  max-width: 300px;
+  font-size: 13px;
+  line-height: 20px;
+}
