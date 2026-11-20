@@ -52,6 +52,16 @@
   text-align: center;
 }
 
+@media not all and (min-width: 900px) {
+  .frame {
+    flex-direction: column;
+  }
+
+  .main {
+    min-height: 0;
+  }
+}
+
 @media not all and (min-width: 768px) {
   .frame {
     position: fixed;

@@ -367,3 +367,42 @@
   font-size: 13px;
   line-height: 20px;
 }
+
+@media not all and (min-width: 900px) {
+  .motionDock {
+    padding: 6px 10px;
+    gap: 4px;
+  }
+
+  .dragTip {
+    display: none;
+  }
+
+  .hudTopLeft {
+    top: 8px;
+    left: 8px;
+    gap: 4px;
+  }
+
+  .boardTitle {
+    padding: 3px 8px;
+    font-size: 11px;
+  }
+
+  .measurePill {
+    padding: 3px 8px;
+    font-size: 11px;
+  }
+
+  .hudTopRight {
+    top: 8px;
+    right: 8px;
+    gap: 4px;
+  }
+
+  .zoomBtn {
+    width: 26px;
+    height: 26px;
+    font-size: 13px;
+  }
+}

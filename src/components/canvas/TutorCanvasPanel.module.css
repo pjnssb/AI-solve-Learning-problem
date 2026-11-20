@@ -37,6 +37,14 @@
   background-color: var(--dsw-alias-brand-primary);
 }
 
+.mobileHandle {
+  display: none;
+}
+
+.mobileFullscreenBtn {
+  display: none;
+}
+
 .header {
   display: flex;
   align-items: center;
@@ -72,6 +80,7 @@
   font-size: 12.5px;
   font-weight: 500;
   cursor: pointer;
+  white-space: nowrap;
   transition:
     background-color 0.15s ease,
     color 0.15s ease;
@@ -99,6 +108,7 @@
   display: flex;
   align-items: center;
   gap: 4px;
+  flex-shrink: 0;
 }
 
 .exportBtn {
@@ -110,6 +120,7 @@
   color: var(--dsw-alias-label-secondary);
   font-size: 12px;
   cursor: pointer;
+  white-space: nowrap;
   transition:
     background-color 0.15s ease,
     color 0.15s ease;
@@ -132,7 +143,7 @@
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
-  padding: 8px 14px;
+  padding: 7px 12px;
   border-bottom: 1px solid var(--dsw-alias-border-l1);
   background-color: var(--dsw-specific-sidebar-fill);
   overflow-x: auto;
@@ -187,16 +198,80 @@
   min-height: 0;
 }
 
+/* 移动端 / 窄屏：上下实时分屏！画板在上方，对话与输入框在下方，边看作图动画边听讲互动 */
 @media not all and (min-width: 900px) {
   .panel {
-    position: fixed;
-    inset: 0;
+    order: -1;
     width: 100% !important;
     border-left: none;
+    border-bottom: 1px solid var(--dsw-alias-border-l2);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+  }
+
+  .panelMobileFullscreen {
+    position: fixed;
+    inset: 0;
+    height: 100% !important;
+    border-bottom: none;
     z-index: 60;
   }
 
   .resizer {
     display: none;
+  }
+
+  .header {
+    height: 44px;
+    padding: 0 8px 0 10px;
+  }
+
+  .tab {
+    height: 26px;
+    padding: 0 9px;
+    font-size: 12px;
+  }
+
+  .exportBtn {
+    height: 26px;
+    padding: 0 7px;
+    font-size: 11.5px;
+  }
+
+  .exportSvgDesktop {
+    display: none;
+  }
+
+  .mobileFullscreenBtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .stepBar {
+    padding: 5px 10px;
+  }
+
+  .mobileHandle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    height: 18px;
+    background-color: var(--dsw-specific-sidebar-fill);
+    border-top: 1px solid var(--dsw-alias-border-l1);
+    cursor: row-resize;
+    touch-action: none;
+  }
+
+  .mobileHandleBar {
+    width: 40px;
+    height: 4px;
+    border-radius: 999px;
+    background-color: var(--dsw-alias-border-l3);
+    transition: background-color 0.15s ease;
+  }
+
+  .mobileHandleActive .mobileHandleBar {
+    background-color: var(--dsw-alias-brand-primary);
   }
 }

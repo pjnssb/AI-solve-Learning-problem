@@ -27,6 +27,10 @@ const loadWidth = (): number => {
 type CanvasPanelState = {
   open: boolean
   width: number
+  /** 移动端上下分屏时画板占据的高度百分比（22~76） */
+  mobileHeightPercent: number
+  /** 移动端一键全屏查看画板开关 */
+  mobileFullscreen: boolean
   activeTab: CanvasMode
   coordEngine: 'native' | 'geogebra'
   /** null 表示跟随最新步骤；数字表示查看某个历史步骤（1-based） */
@@ -44,6 +48,8 @@ type CanvasPanelState = {
 export const useCanvasStore = create<CanvasPanelState>(() => ({
   open: false,
   width: loadWidth(),
+  mobileHeightPercent: 42,
+  mobileFullscreen: false,
   activeTab: 'coordinate',
   coordEngine: 'native',
   selectedStep: null,
@@ -61,18 +67,29 @@ export const openCanvasPanel = (tab?: CanvasMode) =>
     activeTab: tab ?? state.activeTab,
   }))
 
-export const closeCanvasPanel = () => useCanvasStore.setState({ open: false, playing: false })
+export const closeCanvasPanel = () =>
+  useCanvasStore.setState({ open: false, playing: false, mobileFullscreen: false })
 
 export const toggleCanvasPanel = () =>
   useCanvasStore.setState((state) => ({
     open: !state.open,
     playing: state.open ? false : state.playing,
+    mobileFullscreen: state.open ? false : state.mobileFullscreen,
   }))
 
 export const setCanvasTab = (activeTab: CanvasMode) => useCanvasStore.setState({ activeTab })
 
 export const setCoordEngine = (coordEngine: 'native' | 'geogebra') =>
   useCanvasStore.setState({ coordEngine })
+
+export const setMobileHeightPercent = (percent: number) =>
+  useCanvasStore.setState({
+    mobileHeightPercent: Math.max(22, Math.min(76, Math.round(percent))),
+    mobileFullscreen: false,
+  })
+
+export const toggleMobileFullscreen = () =>
+  useCanvasStore.setState((state) => ({ mobileFullscreen: !state.mobileFullscreen }))
 
 export const setCanvasWidth = (width: number) => {
   const clamped = Math.max(340, Math.min(920, Math.round(width)))

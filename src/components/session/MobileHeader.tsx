@@ -10,6 +10,7 @@ import styles from './MobileHeader.module.css'
 /** 移动端顶栏：左侧菜单打开侧边栏；中间模型选择器；右侧画板开关与新对话 */
 export const MobileHeader = ({ title }: { title?: string }) => {
   const t = useTranslate()
+  const canvasOpen = useCanvasStore((state) => state.open)
   const stepCount = useCanvasStore((state) => state.steps.length)
   return (
     <div className={styles.header}>
@@ -25,8 +26,8 @@ export const MobileHeader = ({ title }: { title?: string }) => {
       </div>
       <div className={styles.actions}>
         <button type="button" className={styles.boardBtn} onClick={toggleCanvasPanel}>
-          {t('canvasOpen')}
-          {stepCount > 0 ? ` (${stepCount})` : ''}
+          {canvasOpen ? t('canvasClose') : t('canvasOpen')}
+          {!canvasOpen && stepCount > 0 ? ` (${stepCount})` : ''}
         </button>
         {title === undefined ? null : (
           <IconButton
