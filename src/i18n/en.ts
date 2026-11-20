@@ -3,7 +3,7 @@ import type { zh } from './zh.js'
 export const en = {
   welcomeMessageChat250808: 'What problem shall we explore together?',
   welcomeSubtitle:
-    'Guided step-by-step questions · Interactive Coordinate / GeoGebra · Incremental Flowcharts',
+    'Guided step-by-step questions · Interactive Coordinate Plane · Incremental Flowcharts',
   contentCaveat: 'Socratic AI Tutor · Verify each step as you discover the answer',
   expandSiderbarButton: 'Open sidebar',
   collapseSiderbarButton: 'Close sidebar',

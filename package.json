@@ -1,7 +1,7 @@
 {
   "name": "ai-solve-learning-problem",
   "version": "1.0.0",
-  "description": "AI Solve Learning Problem — 苏格拉底启发式 AI 教学平台（动态坐标系 / GeoGebra / 渐进流程图 / 多服务商模型切换）",
+  "description": "AI Solve Learning Problem — 苏格拉底启发式 AI 教学平台（动态坐标系 / 动点辅助线 / 渐进流程图 / 多服务商模型切换）",
   "license": "MIT",
   "private": true,
   "type": "module",

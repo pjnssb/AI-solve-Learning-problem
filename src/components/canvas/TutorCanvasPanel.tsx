@@ -6,7 +6,6 @@ import {
   selectCanvasStep,
   setCanvasTab,
   setCanvasWidth,
-  setCoordEngine,
   setMobileHeightPercent,
   toggleMobileFullscreen,
   useCanvasStore,
@@ -15,7 +14,6 @@ import { IconCloseOutline16 } from '../base/icons.js'
 import { IconButton } from '../base/IconButton.js'
 import { CoordinateCanvas } from './CoordinateCanvas.js'
 import { FlowchartCanvas } from './FlowchartCanvas.js'
-import { GeoGebraCanvas } from './GeoGebraCanvas.js'
 import styles from './TutorCanvasPanel.module.css'
 
 const useIsNarrowSplit = () => {
@@ -43,7 +41,6 @@ export const TutorCanvasPanel = () => {
   const mobileHeightPercent = useCanvasStore((state) => state.mobileHeightPercent)
   const mobileFullscreen = useCanvasStore((state) => state.mobileFullscreen)
   const activeTab = useCanvasStore((state) => state.activeTab)
-  const coordEngine = useCanvasStore((state) => state.coordEngine)
   const selectedStep = useCanvasStore((state) => state.selectedStep)
   const steps = useCanvasStore((state) => state.steps)
   const board = useCanvasStore(getCurrentCanvasBoard)
@@ -153,17 +150,7 @@ export const TutorCanvasPanel = () => {
         </div>
 
         <div className={styles.headerActions}>
-          {activeTab === 'coordinate' ? (
-            <button
-              type="button"
-              className={clsx(styles.exportBtn, coordEngine === 'geogebra' && styles.engineActive)}
-              title="在内置极速坐标引擎与官方 GeoGebra 引擎之间切换"
-              onClick={() => setCoordEngine(coordEngine === 'native' ? 'geogebra' : 'native')}
-            >
-              {coordEngine === 'geogebra' ? 'GeoGebra ✓' : isNarrow ? 'GeoGebra' : '切至 GeoGebra'}
-            </button>
-          ) : null}
-          {(activeTab === 'coordinate' && coordEngine === 'native' && board.hasCoordinate) ||
+          {(activeTab === 'coordinate' && board.hasCoordinate) ||
           (activeTab === 'flowchart' && board.hasFlowchart) ? (
             <button
               type="button"
@@ -208,19 +195,11 @@ export const TutorCanvasPanel = () => {
 
       <div className={styles.body}>
         {activeTab === 'coordinate' ? (
-          coordEngine === 'geogebra' ? (
-            <GeoGebraCanvas
-              coordinate={board.coordinate}
-              hasContent={board.hasCoordinate}
-              onFallbackNative={() => setCoordEngine('native')}
-            />
-          ) : (
-            <CoordinateCanvas
-              coordinate={board.coordinate}
-              hasContent={board.hasCoordinate}
-              svgRef={svgRef}
-            />
-          )
+          <CoordinateCanvas
+            coordinate={board.coordinate}
+            hasContent={board.hasCoordinate}
+            svgRef={svgRef}
+          />
         ) : (
           <FlowchartCanvas
             flowchart={board.flowchart}

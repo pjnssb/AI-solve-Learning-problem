@@ -625,20 +625,55 @@ export const CoordinateCanvas = ({
             ) : null
           )}
 
-          {/* 线段 / 直线 */}
+          {/* 线段 / 直线 / 射线 / 向量 */}
           {coordinate.segments.map((seg) => {
-            const a = resolvePointCoords(coordinate, seg.fromId, tValues)
-            const b = resolvePointCoords(coordinate, seg.toId, tValues)
+            const a = seg.fromId
+              ? resolvePointCoords(coordinate, seg.fromId, tValues)
+              : seg.from
+                ? { x: seg.from[0], y: seg.from[1] }
+                : null
+            const b = seg.toId
+              ? resolvePointCoords(coordinate, seg.toId, tValues)
+              : seg.to
+                ? { x: seg.to[0], y: seg.to[1] }
+                : null
             if (!a || !b) {
               return null
             }
-            const x1 = transform.toSvgX(a.x)
-            const y1 = transform.toSvgY(a.y)
-            const x2 = transform.toSvgX(b.x)
-            const y2 = transform.toSvgY(b.y)
-            const len = Math.hypot(b.x - a.x, b.y - a.y)
-            const mx = (x1 + x2) / 2
-            const my = (y1 + y2) / 2
+            const dx = b.x - a.x
+            const dy = b.y - a.y
+            const len = Math.hypot(dx, dy)
+            let p1 = a
+            let p2 = b
+            if ((seg.kind === 'line' || seg.kind === 'ray') && len > 1e-6) {
+              const span =
+                Math.hypot(
+                  transform.visibleXMax - transform.visibleXMin,
+                  transform.visibleYMax - transform.visibleYMin
+                ) * 1.5
+              const ux = dx / len
+              const uy = dy / len
+              if (seg.kind === 'line') {
+                p1 = { x: a.x - ux * span, y: a.y - uy * span }
+              }
+              p2 = { x: a.x + ux * span, y: a.y + uy * span }
+            }
+            const x1 = transform.toSvgX(p1.x)
+            const y1 = transform.toSvgY(p1.y)
+            const x2 = transform.toSvgX(p2.x)
+            const y2 = transform.toSvgY(p2.y)
+            const mx = (transform.toSvgX(a.x) + transform.toSvgX(b.x)) / 2
+            const my = (transform.toSvgY(a.y) + transform.toSvgY(b.y)) / 2
+            let arrowPoly: string | null = null
+            if (seg.kind === 'vector' && len > 1e-6) {
+              const angle = Math.atan2(y2 - y1, x2 - x1)
+              const sizePx = 9
+              const ax1 = x2 - sizePx * Math.cos(angle - Math.PI / 6)
+              const ay1 = y2 - sizePx * Math.sin(angle - Math.PI / 6)
+              const ax2 = x2 - sizePx * Math.cos(angle + Math.PI / 6)
+              const ay2 = y2 - sizePx * Math.sin(angle + Math.PI / 6)
+              arrowPoly = `${x2},${y2} ${ax1},${ay1} ${ax2},${ay2}`
+            }
             return (
               <g key={seg.id}>
                 <line
@@ -651,6 +686,7 @@ export const CoordinateCanvas = ({
                   strokeLinecap="round"
                   strokeDasharray={seg.dashed ? '6 4' : undefined}
                 />
+                {arrowPoly ? <polygon points={arrowPoly} fill={seg.color} /> : null}
                 {seg.showLength || seg.label ? (
                   <text x={mx + 6} y={my - 6} className={styles.lengthTag}>
                     {seg.label ? `${seg.label} ` : ''}
@@ -658,6 +694,29 @@ export const CoordinateCanvas = ({
                   </text>
                 ) : null}
               </g>
+            )
+          })}
+
+          {/* 自由文字/公式标注 */}
+          {coordinate.annotations.map((note) => {
+            const pos = note.anchorPointId
+              ? resolvePointCoords(coordinate, note.anchorPointId, tValues)
+              : note.x !== undefined && note.y !== undefined
+                ? { x: note.x, y: note.y }
+                : null
+            if (!pos) {
+              return null
+            }
+            return (
+              <text
+                key={note.id}
+                x={transform.toSvgX(pos.x) + (note.anchorPointId ? 10 : 0)}
+                y={transform.toSvgY(pos.y) + (note.anchorPointId ? 18 : 0)}
+                className={styles.pointLabel}
+                fill={note.color}
+              >
+                {note.text}
+              </text>
             )
           })}
 

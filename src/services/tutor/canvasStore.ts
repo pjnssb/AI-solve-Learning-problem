@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { getReplyText } from '../chat/reply.js'
 import type { Message } from '../chat/types.js'
 import { applyToolCall } from './toolExecutor.js'
-import { isFlowchartTool, isGeoGebraTool, parseTutorReply } from './toolParser.js'
+import { parseTutorReply } from './toolParser.js'
 import {
   createEmptyBoardState,
   type CanvasMode,
@@ -32,7 +32,6 @@ type CanvasPanelState = {
   /** 移动端一键全屏查看画板开关 */
   mobileFullscreen: boolean
   activeTab: CanvasMode
-  coordEngine: 'native' | 'geogebra'
   /** null 表示跟随最新步骤；数字表示查看某个历史步骤（1-based） */
   selectedStep: number | null
   steps: CanvasStepSnapshot[]
@@ -51,7 +50,6 @@ export const useCanvasStore = create<CanvasPanelState>(() => ({
   mobileHeightPercent: 42,
   mobileFullscreen: false,
   activeTab: 'coordinate',
-  coordEngine: 'native',
   selectedStep: null,
   steps: [],
   tValues: {},
@@ -78,9 +76,6 @@ export const toggleCanvasPanel = () =>
   }))
 
 export const setCanvasTab = (activeTab: CanvasMode) => useCanvasStore.setState({ activeTab })
-
-export const setCoordEngine = (coordEngine: 'native' | 'geogebra') =>
-  useCanvasStore.setState({ coordEngine })
 
 export const setMobileHeightPercent = (percent: number) =>
   useCanvasStore.setState({
@@ -110,9 +105,6 @@ export const selectCanvasStep = (stepNumber: number | null) =>
     return {
       selectedStep: stepNumber,
       activeTab: target ? target.mode : state.activeTab,
-      ...(target?.board.coordinate.preferredEngine
-        ? { coordEngine: target.board.coordinate.preferredEngine }
-        : {}),
     }
   })
 
@@ -124,11 +116,9 @@ export const jumpToMessageStep = (messageId: string) => {
     return
   }
   const isLatest = target.stepNumber === state.steps.at(-1)?.stepNumber
-  const usesGeoGebra = target.toolCalls.some((c) => isGeoGebraTool(c.tool))
   useCanvasStore.setState({
     open: true,
     activeTab: target.mode,
-    ...(usesGeoGebra ? { coordEngine: 'geogebra' as const } : {}),
     selectedStep: isLatest ? null : target.stepNumber,
   })
 }
@@ -149,7 +139,7 @@ export const toggleCanvasLoopMode = () =>
 
 /**
  * 从当前可见消息分支确定性重放所有 Agent 画板工具调用，生成每一步的画板快照。
- * 这样无论是流式实时绘制、切换会话、切换分支、还是页面刷新，画板状态都 100% 一致。
+ * 坐标系画板与流程图画板独立保留状态，AI 可以在两者之间随时来回切换，不会丢失另一块画板的内容。
  */
 export const syncCanvasFromMessages = (sessionId: string | null, visibleMessages: Message[]) => {
   if (!sessionId) {
@@ -158,7 +148,6 @@ export const syncCanvasFromMessages = (sessionId: string | null, visibleMessages
       selectedStep: null,
       tValues: {},
       playing: false,
-      coordEngine: 'native',
       lastAutoOpenedKey: '',
     })
     return
@@ -181,10 +170,8 @@ export const syncCanvasFromMessages = (sessionId: string | null, visibleMessages
       continue
     }
     const stepNumber = steps.length + 1
-    let stepMode: CanvasMode = board.activeMode
     for (const call of toolCalls) {
       board = applyToolCall(board, call, stepNumber)
-      stepMode = isFlowchartTool(call.tool) ? 'flowchart' : 'coordinate'
       totalTools += 1
     }
     const lastSummary = toolCalls.at(-1)?.summary ?? `步骤 ${stepNumber}`
@@ -192,7 +179,7 @@ export const syncCanvasFromMessages = (sessionId: string | null, visibleMessages
       stepNumber,
       messageId: message.id,
       title: lastSummary,
-      mode: stepMode,
+      mode: board.activeMode,
       toolCalls,
       board,
     })
@@ -202,7 +189,6 @@ export const syncCanvasFromMessages = (sessionId: string | null, visibleMessages
   const autoKey = `${sessionId}:${totalTools}`
   const latestBoard = steps.at(-1)?.board
 
-  // 合并动点初始 t 值与工具下发的目标 t 值
   const nextTValues: Record<string, number> = { ...prev.tValues }
   if (latestBoard) {
     for (const mp of latestBoard.coordinate.movingPoints) {
@@ -210,7 +196,6 @@ export const syncCanvasFromMessages = (sessionId: string | null, visibleMessages
         nextTValues[mp.id] = mp.initialT
       }
     }
-    // 若最新的步骤刚刚触发 coord_set_t，则自动移动到该目标值
     const latestStep = steps.at(-1)
     if (
       latestStep &&
@@ -225,18 +210,14 @@ export const syncCanvasFromMessages = (sessionId: string | null, visibleMessages
 
   const shouldAutoOpen = totalTools > 0 && autoKey !== prev.lastAutoOpenedKey
   const latestMode = steps.at(-1)?.mode ?? prev.activeTab
-  const latestStepUsesGeoGebra =
-    steps.at(-1)?.toolCalls.some((c) => isGeoGebraTool(c.tool)) ?? false
 
   useCanvasStore.setState({
     steps,
     tValues: nextTValues,
-    // 新工具调用发生时自动打开画板并切到对应模式/引擎、跟随最新步骤
     ...(shouldAutoOpen
       ? {
           open: true,
           activeTab: latestMode,
-          ...(latestStepUsesGeoGebra ? { coordEngine: 'geogebra' as const } : {}),
           selectedStep: null,
           lastAutoOpenedKey: autoKey,
         }

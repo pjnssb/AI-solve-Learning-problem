@@ -1,6 +1,7 @@
 import type { ParsedTutorReply, TutorToolCall, TutorToolName } from './types.js'
 
 const VALID_TOOLS = new Set<TutorToolName>([
+  'board_switch',
   'coord_setup',
   'coord_plot_point',
   'coord_add_moving_point',
@@ -10,18 +11,17 @@ const VALID_TOOLS = new Set<TutorToolName>([
   'coord_draw_circle',
   'coord_draw_auxiliary_line',
   'coord_add_measurement',
+  'coord_annotate',
   'coord_set_t',
   'coord_highlight',
+  'coord_remove',
   'coord_clear',
-  'geogebra_eval',
-  'geogebra_style',
-  'geogebra_animate',
-  'geogebra_clear',
   'flow_init',
   'flow_add_node',
   'flow_add_edge',
   'flow_update_node',
   'flow_highlight',
+  'flow_remove',
   'flow_clear',
 ])
 
@@ -32,6 +32,8 @@ const defaultSummary = (tool: TutorToolName, args: Record<string, unknown>): str
   const label = typeof args.label === 'string' && args.label ? args.label : ''
   const title = typeof args.title === 'string' && args.title ? args.title : ''
   switch (tool) {
+    case 'board_switch':
+      return args.mode === 'flowchart' ? '切换到思维流程图画板' : '切换到数学坐标系画板'
     case 'coord_setup':
       return title ? `初始化坐标系：${title}` : '初始化数学坐标系'
     case 'coord_plot_point':
@@ -39,7 +41,7 @@ const defaultSummary = (tool: TutorToolName, args: Record<string, unknown>): str
     case 'coord_add_moving_point':
       return `添加动点 ${label || String(args.id ?? 'P')}`
     case 'coord_draw_segment':
-      return `连接线段 ${label || `${String(args.fromId ?? '')}${String(args.toId ?? '')}`}`
+      return `绘制线段 ${label || `${String(args.fromId ?? '')}${String(args.toId ?? '')}`}`
     case 'coord_draw_function':
       return `绘制函数图像 ${label || String(args.expr ?? '')}`
     case 'coord_draw_polygon':
@@ -50,20 +52,16 @@ const defaultSummary = (tool: TutorToolName, args: Record<string, unknown>): str
       return `作辅助线 ${label || String(args.kind ?? '')}`
     case 'coord_add_measurement':
       return `添加实时度量 ${label}`
+    case 'coord_annotate':
+      return `添加标注：${String(args.text ?? label)}`
     case 'coord_set_t':
       return `移动动点至目标位置`
     case 'coord_highlight':
       return `高亮当前步骤关键元素`
+    case 'coord_remove':
+      return `删除坐标系元素`
     case 'coord_clear':
       return `清空坐标系画板`
-    case 'geogebra_eval':
-      return `GeoGebra 执行作图指令`
-    case 'geogebra_style':
-      return `GeoGebra 设置对象样式`
-    case 'geogebra_animate':
-      return `GeoGebra 控制动点动画`
-    case 'geogebra_clear':
-      return `重置 GeoGebra 画板`
     case 'flow_init':
       return title ? `创建流程图：${title}` : '创建思维流程图'
     case 'flow_add_node':
@@ -74,6 +72,8 @@ const defaultSummary = (tool: TutorToolName, args: Record<string, unknown>): str
       return `补全节点答案：${label || String(args.id ?? '')}`
     case 'flow_highlight':
       return `高亮流程图当前步骤`
+    case 'flow_remove':
+      return `删除流程图节点或连线`
     case 'flow_clear':
       return `清空流程图画板`
   }
@@ -216,9 +216,6 @@ export const parseTutorReply = (rawText: string): ParsedTutorReply => {
   }
 }
 
-export const isGeoGebraTool = (tool: TutorToolName): boolean => tool.startsWith('geogebra_')
-
-export const isCoordinateTool = (tool: TutorToolName): boolean =>
-  tool.startsWith('coord_') || tool.startsWith('geogebra_')
+export const isCoordinateTool = (tool: TutorToolName): boolean => tool.startsWith('coord_')
 
 export const isFlowchartTool = (tool: TutorToolName): boolean => tool.startsWith('flow_')

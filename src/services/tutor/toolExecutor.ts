@@ -376,12 +376,18 @@ export const applyToolCall = (
     }
 
     case 'coord_draw_segment': {
-      const fromId = str(args.fromId)
-      const toId = str(args.toId)
-      if (!fromId || !toId) {
+      const fromId =
+        typeof args.fromId === 'string' && args.fromId.trim() ? args.fromId.trim() : undefined
+      const toId = typeof args.toId === 'string' && args.toId.trim() ? args.toId.trim() : undefined
+      const from = numPair(args.from)
+      const to = numPair(args.to)
+      if ((!fromId && !from) || (!toId && !to)) {
         return state
       }
-      const id = str(args.id, `seg-${fromId}-${toId}`)
+      const id = str(
+        args.id,
+        `seg-${fromId ?? 'pt'}-${toId ?? state.coordinate.segments.length + 1}`
+      )
       const rawKind = str(args.kind, 'segment')
       const kind: CoordSegment['kind'] =
         rawKind === 'line' || rawKind === 'ray' || rawKind === 'vector' ? rawKind : 'segment'
@@ -389,6 +395,8 @@ export const applyToolCall = (
         id,
         fromId,
         toId,
+        from,
+        to,
         kind,
         color: str(args.color, '#2563EB'),
         label: typeof args.label === 'string' ? args.label : undefined,
@@ -594,132 +602,83 @@ export const applyToolCall = (
       }
     }
 
-    case 'geogebra_clear':
-      return {
-        ...state,
-        activeMode: 'coordinate',
-        hasCoordinate: true,
-        coordinate: {
-          ...createEmptyCoordinateState(),
-          preferredEngine: 'geogebra',
-        },
-      }
-
-    case 'geogebra_eval': {
-      const rawCommands = Array.isArray(args.commands)
-        ? strArray(args.commands)
-        : typeof args.command === 'string' && args.command.trim()
-          ? [args.command.trim()]
-          : []
-      if (rawCommands.length === 0) {
+    case 'coord_annotate': {
+      const text = str(args.text, str(args.label))
+      if (!text.trim()) {
         return state
       }
-      const id = str(args.id, `ggb-eval-${state.coordinate.geogebraCommands.length + 1}`)
-      const target = typeof args.target === 'string' ? args.target : undefined
-      const styles = target
-        ? [
-            {
-              target,
-              color: typeof args.color === 'string' ? args.color : undefined,
-              dashed: typeof args.dashed === 'boolean' ? args.dashed : undefined,
-              thickness: typeof args.thickness === 'number' ? args.thickness : undefined,
-              trace: typeof args.trace === 'boolean' ? args.trace : undefined,
-              visible: typeof args.visible === 'boolean' ? args.visible : undefined,
-              caption: typeof args.caption === 'string' ? args.caption : undefined,
-            },
-          ]
-        : undefined
-      const nextViewport =
-        args.xMin !== undefined ||
-        args.xMax !== undefined ||
-        args.yMin !== undefined ||
-        args.yMax !== undefined
-          ? {
-              xMin: num(args.xMin, state.coordinate.viewport.xMin),
-              xMax: num(args.xMax, state.coordinate.viewport.xMax),
-              yMin: num(args.yMin, state.coordinate.viewport.yMin),
-              yMax: num(args.yMax, state.coordinate.viewport.yMax),
-            }
-          : state.coordinate.viewport
+      const id = str(args.id, `note-${state.coordinate.annotations.length + 1}`)
+      const anchorPointId =
+        typeof args.anchorPointId === 'string' && args.anchorPointId.trim()
+          ? args.anchorPointId.trim()
+          : undefined
+      const x = args.x !== undefined ? num(args.x, 0) : undefined
+      const y = args.y !== undefined ? num(args.y, 0) : undefined
+      if (!anchorPointId && (x === undefined || y === undefined)) {
+        return state
+      }
       return {
         ...state,
         activeMode: 'coordinate',
         hasCoordinate: true,
         coordinate: {
           ...state.coordinate,
-          title: str(args.title, state.coordinate.title),
-          viewport: nextViewport,
-          preferredEngine: 'geogebra',
-          geogebraCommands: [
-            ...state.coordinate.geogebraCommands,
-            { id, commands: rawCommands, styles, stepIndex },
-          ],
+          annotations: upsertById(state.coordinate.annotations, {
+            id,
+            text: text.trim(),
+            x,
+            y,
+            anchorPointId,
+            color: str(args.color, '#3964FE'),
+            stepIndex,
+          }),
+          highlightedIds: [id],
         },
       }
     }
 
-    case 'geogebra_style': {
-      const target = str(args.target)
-      if (!target) {
-        return state
-      }
-      const id = str(args.id, `ggb-style-${state.coordinate.geogebraCommands.length + 1}`)
+    case 'board_switch': {
+      const mode = args.mode === 'flowchart' ? 'flowchart' : 'coordinate'
       return {
         ...state,
-        activeMode: 'coordinate',
-        hasCoordinate: true,
-        coordinate: {
-          ...state.coordinate,
-          preferredEngine: 'geogebra',
-          geogebraCommands: [
-            ...state.coordinate.geogebraCommands,
-            {
-              id,
-              commands: [],
-              styles: [
-                {
-                  target,
-                  color: typeof args.color === 'string' ? args.color : undefined,
-                  dashed: typeof args.dashed === 'boolean' ? args.dashed : undefined,
-                  thickness: typeof args.thickness === 'number' ? args.thickness : undefined,
-                  trace: typeof args.trace === 'boolean' ? args.trace : undefined,
-                  visible: typeof args.visible === 'boolean' ? args.visible : undefined,
-                  caption: typeof args.caption === 'string' ? args.caption : undefined,
-                },
-              ],
-              stepIndex,
-            },
-          ],
-        },
+        activeMode: mode,
       }
     }
 
-    case 'geogebra_animate': {
-      const target = str(args.target)
-      if (!target) {
+    case 'coord_remove': {
+      const removeSet = new Set<string>([
+        ...strArray(args.ids),
+        ...(typeof args.id === 'string' && args.id.trim() ? [args.id.trim()] : []),
+      ])
+      if (removeSet.size === 0) {
         return state
       }
-      const id = str(args.id, `ggb-anim-${state.coordinate.geogebraCommands.length + 1}`)
+      const nextTargetT = Object.fromEntries(
+        Object.entries(state.coordinate.targetT).filter(([key]) => !removeSet.has(key))
+      )
       return {
         ...state,
         activeMode: 'coordinate',
-        hasCoordinate: true,
         coordinate: {
           ...state.coordinate,
-          preferredEngine: 'geogebra',
-          geogebraCommands: [
-            ...state.coordinate.geogebraCommands,
-            {
-              id,
-              commands: [],
-              animate: {
-                target,
-                playing: bool(args.playing, true),
-                value: args.value !== undefined ? num(args.value, Number.NaN) : undefined,
-              },
-              stepIndex,
-            },
-          ],
+          points: state.coordinate.points.filter((p) => !removeSet.has(p.id)),
+          movingPoints: state.coordinate.movingPoints.filter((p) => !removeSet.has(p.id)),
+          segments: state.coordinate.segments.filter(
+            (s) =>
+              !removeSet.has(s.id) &&
+              !(s.fromId && removeSet.has(s.fromId)) &&
+              !(s.toId && removeSet.has(s.toId))
+          ),
+          functions: state.coordinate.functions.filter((f) => !removeSet.has(f.id)),
+          polygons: state.coordinate.polygons.filter((p) => !removeSet.has(p.id)),
+          circles: state.coordinate.circles.filter((c) => !removeSet.has(c.id)),
+          auxiliaryLines: state.coordinate.auxiliaryLines.filter(
+            (a) => !removeSet.has(a.id) && !(a.derivedPointId && removeSet.has(a.derivedPointId))
+          ),
+          measurements: state.coordinate.measurements.filter((m) => !removeSet.has(m.id)),
+          annotations: state.coordinate.annotations.filter((n) => !removeSet.has(n.id)),
+          highlightedIds: state.coordinate.highlightedIds.filter((id) => !removeSet.has(id)),
+          targetT: nextTargetT,
         },
       }
     }
@@ -853,6 +812,28 @@ export const applyToolCall = (
         ...state,
         activeMode: 'flowchart',
         flowchart: { ...state.flowchart, highlightedIds: ids },
+      }
+    }
+
+    case 'flow_remove': {
+      const nodeSet = new Set<string>([
+        ...strArray(args.nodeIds),
+        ...strArray(args.ids),
+        ...(typeof args.id === 'string' && args.id.trim() ? [args.id.trim()] : []),
+      ])
+      const edgeSet = new Set<string>(strArray(args.edgeIds))
+      return {
+        ...state,
+        activeMode: 'flowchart',
+        flowchart: {
+          ...state.flowchart,
+          nodes: state.flowchart.nodes.filter((n) => !nodeSet.has(n.id)),
+          edges: state.flowchart.edges.filter(
+            (e) =>
+              !edgeSet.has(e.id) && !nodeSet.has(e.id) && !nodeSet.has(e.from) && !nodeSet.has(e.to)
+          ),
+          highlightedIds: state.flowchart.highlightedIds.filter((id) => !nodeSet.has(id)),
+        },
       }
     }
   }

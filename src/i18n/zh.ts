@@ -1,6 +1,6 @@
 export const zh = {
   welcomeMessageChat250808: '今天想一起攻克哪道题？',
-  welcomeSubtitle: '不直接给答案 · 一步步启发提问 · 实时坐标系 / GeoGebra · 渐进式思维流程图',
+  welcomeSubtitle: '不直接给答案 · 一步步启发提问 · 实时动态坐标系 · 渐进式思维流程图',
   contentCaveat: 'AI 启发式教学助手 · 请边思考边验证每一步推导',
   expandSiderbarButton: '打开边栏',
   collapseSiderbarButton: '收起边栏',

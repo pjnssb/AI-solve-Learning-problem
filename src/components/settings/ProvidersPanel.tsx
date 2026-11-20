@@ -347,9 +347,10 @@ export const ProvidersPanel = () => {
 
           {current.protocol === 'demo' ? (
             <div className={styles.demoNote}>
-              内置苏格拉底教学演示引擎无需 API Key，开箱即可体验「数学动点与动态辅助线」、「GeoGebra
-              联动」以及「英语长难句 / 数学逻辑渐进式流程图」。 若想辅导任意自拟题目，请在上方选择
-              DeepSeek、OpenAI、Claude、Gemini 或自定义接口并填入 API Key。
+              内置苏格拉底教学演示引擎无需 API
+              Key，开箱即可体验「数学动点与动态辅助线」以及「英语长难句 / 数学逻辑渐进式流程图」。
+              若想辅导任意自拟题目，请在上方选择 DeepSeek、OpenAI、Claude、Gemini 或自定义接口并填入
+              API Key。
             </div>
           ) : (
             <>

@@ -53,13 +53,25 @@ export type CoordMovingPoint = {
 
 export type CoordSegment = {
   id: string
-  fromId: string
-  toId: string
+  fromId?: string
+  toId?: string
+  from?: [number, number]
+  to?: [number, number]
   kind: 'segment' | 'line' | 'ray' | 'vector'
   color: string
   label?: string
   showLength?: boolean
   dashed?: boolean
+  stepIndex: number
+}
+
+export type CoordAnnotation = {
+  id: string
+  text: string
+  x?: number
+  y?: number
+  anchorPointId?: string
+  color: string
   stepIndex: number
 }
 
@@ -130,35 +142,10 @@ export type CoordMeasurement = {
   stepIndex: number
 }
 
-export type GeoGebraStyleSpec = {
-  target: string
-  color?: string
-  dashed?: boolean
-  thickness?: number
-  trace?: boolean
-  visible?: boolean
-  caption?: string
-}
-
-export type GeoGebraAnimateSpec = {
-  target: string
-  playing: boolean
-  value?: number
-}
-
-export type GeoGebraCommandStep = {
-  id: string
-  commands: string[]
-  styles?: GeoGebraStyleSpec[]
-  animate?: GeoGebraAnimateSpec
-  stepIndex: number
-}
-
 export type CoordinateState = {
   title: string
   viewport: CoordViewport
   showGrid: boolean
-  preferredEngine?: 'native' | 'geogebra'
   points: CoordPoint[]
   movingPoints: CoordMovingPoint[]
   segments: CoordSegment[]
@@ -167,8 +154,7 @@ export type CoordinateState = {
   circles: CoordCircle[]
   auxiliaryLines: CoordAuxiliaryLine[]
   measurements: CoordMeasurement[]
-  /** 原生 GeoGebra 指令队列（供 AI Agent 直接调用 GeoGebra 全套几何/代数/轨迹/动画能力） */
-  geogebraCommands: GeoGebraCommandStep[]
+  annotations: CoordAnnotation[]
   /** 工具建议将某个动点平滑移动到指定 t 值 */
   targetT: Record<string, number>
   highlightedIds: string[]
@@ -203,6 +189,7 @@ export type FlowchartState = {
 }
 
 export type TutorToolName =
+  | 'board_switch'
   | 'coord_setup'
   | 'coord_plot_point'
   | 'coord_add_moving_point'
@@ -212,18 +199,17 @@ export type TutorToolName =
   | 'coord_draw_circle'
   | 'coord_draw_auxiliary_line'
   | 'coord_add_measurement'
+  | 'coord_annotate'
   | 'coord_set_t'
   | 'coord_highlight'
+  | 'coord_remove'
   | 'coord_clear'
-  | 'geogebra_eval'
-  | 'geogebra_style'
-  | 'geogebra_animate'
-  | 'geogebra_clear'
   | 'flow_init'
   | 'flow_add_node'
   | 'flow_add_edge'
   | 'flow_update_node'
   | 'flow_highlight'
+  | 'flow_remove'
   | 'flow_clear'
 
 export type TutorToolCall = {
@@ -273,7 +259,7 @@ export const createEmptyCoordinateState = (): CoordinateState => ({
   circles: [],
   auxiliaryLines: [],
   measurements: [],
-  geogebraCommands: [],
+  annotations: [],
   targetT: {},
   highlightedIds: [],
 })
