@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { getReplyText } from '../chat/reply.js'
 import type { Message } from '../chat/types.js'
 import { applyToolCall } from './toolExecutor.js'
-import { isFlowchartTool, parseTutorReply } from './toolParser.js'
+import { isFlowchartTool, isGeoGebraTool, parseTutorReply } from './toolParser.js'
 import {
   createEmptyBoardState,
   type CanvasMode,
@@ -28,6 +28,7 @@ type CanvasPanelState = {
   open: boolean
   width: number
   activeTab: CanvasMode
+  coordEngine: 'native' | 'geogebra'
   /** null 表示跟随最新步骤；数字表示查看某个历史步骤（1-based） */
   selectedStep: number | null
   steps: CanvasStepSnapshot[]
@@ -44,6 +45,7 @@ export const useCanvasStore = create<CanvasPanelState>(() => ({
   open: false,
   width: loadWidth(),
   activeTab: 'coordinate',
+  coordEngine: 'native',
   selectedStep: null,
   steps: [],
   tValues: {},
@@ -69,6 +71,9 @@ export const toggleCanvasPanel = () =>
 
 export const setCanvasTab = (activeTab: CanvasMode) => useCanvasStore.setState({ activeTab })
 
+export const setCoordEngine = (coordEngine: 'native' | 'geogebra') =>
+  useCanvasStore.setState({ coordEngine })
+
 export const setCanvasWidth = (width: number) => {
   const clamped = Math.max(340, Math.min(920, Math.round(width)))
   try {
@@ -88,6 +93,9 @@ export const selectCanvasStep = (stepNumber: number | null) =>
     return {
       selectedStep: stepNumber,
       activeTab: target ? target.mode : state.activeTab,
+      ...(target?.board.coordinate.preferredEngine
+        ? { coordEngine: target.board.coordinate.preferredEngine }
+        : {}),
     }
   })
 
@@ -99,9 +107,11 @@ export const jumpToMessageStep = (messageId: string) => {
     return
   }
   const isLatest = target.stepNumber === state.steps.at(-1)?.stepNumber
+  const usesGeoGebra = target.toolCalls.some((c) => isGeoGebraTool(c.tool))
   useCanvasStore.setState({
     open: true,
     activeTab: target.mode,
+    ...(usesGeoGebra ? { coordEngine: 'geogebra' as const } : {}),
     selectedStep: isLatest ? null : target.stepNumber,
   })
 }
@@ -131,6 +141,7 @@ export const syncCanvasFromMessages = (sessionId: string | null, visibleMessages
       selectedStep: null,
       tValues: {},
       playing: false,
+      coordEngine: 'native',
       lastAutoOpenedKey: '',
     })
     return
@@ -197,15 +208,18 @@ export const syncCanvasFromMessages = (sessionId: string | null, visibleMessages
 
   const shouldAutoOpen = totalTools > 0 && autoKey !== prev.lastAutoOpenedKey
   const latestMode = steps.at(-1)?.mode ?? prev.activeTab
+  const latestStepUsesGeoGebra =
+    steps.at(-1)?.toolCalls.some((c) => isGeoGebraTool(c.tool)) ?? false
 
   useCanvasStore.setState({
     steps,
     tValues: nextTValues,
-    // 新工具调用发生时自动打开画板并切到对应模式、跟随最新步骤
+    // 新工具调用发生时自动打开画板并切到对应模式/引擎、跟随最新步骤
     ...(shouldAutoOpen
       ? {
           open: true,
           activeTab: latestMode,
+          ...(latestStepUsesGeoGebra ? { coordEngine: 'geogebra' as const } : {}),
           selectedStep: null,
           lastAutoOpenedKey: autoKey,
         }

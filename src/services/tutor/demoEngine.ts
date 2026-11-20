@@ -864,8 +864,99 @@ const buildCustomDemoTurn = (round: number, userText: string, firstText: string)
   return buildShortestPathTurn(round, userText)
 }
 
+/** 课程 5：GeoGebra 原生指令联动演示（动点轨迹 Locus + 动画滑块 + 中位线辅助线） */
+const buildGeoGebraLocusTurn = (round: number, userText: string): DemoTurn => {
+  if (round === 0) {
+    return {
+      title: 'GeoGebra · 动点中点轨迹探究',
+      thinking:
+        '用户希望直接调用 GeoGebra 探究几何问题。第 1 步调用 geogebra_eval 画出定圆 O(0,0), r=3、圆外定点 A(6,0) 以及圆上的动点 P，并调用 geogebra_animate 让动点 P 先动起来观察。',
+      content: [
+        '没问题！我现在直接调用 **GeoGebra 原生 Agent 工具**，右侧画板会自动切换到官方 GeoGebra 引擎，先把第 1 步的已知条件画出来：',
+        toolBlock('geogebra_eval', 'GeoGebra 作定圆 O(0,0) 与圆上动点 P、定点 A(6,0)', {
+          title: 'GeoGebra 动点中点轨迹',
+          xMin: -4,
+          xMax: 8,
+          yMin: -4.5,
+          yMax: 4.5,
+          commands: [
+            'O = (0, 0)',
+            'c = Circle(O, 3)',
+            'A = (6, 0)',
+            't = Slider(0, 2*pi, 0.05)',
+            'P = (3*cos(t), 3*sin(t))',
+            's = Segment(A, P)',
+          ],
+          target: 'P',
+          color: '#EF4444',
+        }),
+        toolBlock('geogebra_animate', '启动 GeoGebra 动点滑块 t 动画', {
+          target: 't',
+          playing: true,
+        }),
+        '你看右侧的 GeoGebra 画板：红点 $P$ 正在半径为 $3$ 的圆上不停运动，并与定点 $A(6, 0)$ 连成动态线段 $AP$。',
+        '**第 1 步思考**：现在我们取线段 $AP$ 的**中点 $M$**。随着 $P$ 在大圆上绕圈，你先凭直觉猜猜看：中点 $M$ 走出来的**轨迹**会是什么图形？',
+        choicesBlock([
+          '也是一个圆！而且半径应该是原来的一半',
+          '是一条直线或椭圆',
+          '先帮我把中点 M 和轨迹在 GeoGebra 里画出来看看',
+        ]),
+      ].join('\n\n'),
+    }
+  }
+
+  if (round === 1) {
+    const guessedCircle = /圆|circle|一半|1\.5/i.test(userText)
+    const opening = guessedCircle
+      ? '直觉超准！👏 它确实是一个半径减半的圆！我们用 GeoGebra 的原生中点命令 `Midpoint(A, P)` 和轨迹命令 `Locus(M, P)` 一步步验证：'
+      : '好猜想！不如我们用 GeoGebra 亲眼验证一下——现在只添加中点 $M$ 和动态轨迹辅助线！'
+    return {
+      thinking:
+        '第 2 步：在 GeoGebra 里构造中点 M、连接中位线辅助线并开启 M 的轨迹，再引导学生用三角形中位线定理严格证明圆心与半径。',
+      content: [
+        opening,
+        toolBlock('geogebra_eval', 'GeoGebra 构造中点 M 与轨迹 Locus(M, P)', {
+          commands: ['M = Midpoint(A, P)', 'loc = Locus(M, P)'],
+          target: 'loc',
+          color: '#10B981',
+          thickness: 3,
+        }),
+        toolBlock('geogebra_eval', 'GeoGebra 作辅助线：连接圆心 O 与中点 B(3,0) 及中位线 BM', {
+          commands: ['B = Midpoint(O, A)', 'auxBM = Segment(B, M)', 'auxOP = Segment(O, P)'],
+          target: 'auxBM',
+          color: '#F59E0B',
+          dashed: true,
+        }),
+        toolBlock('geogebra_style', '将半径辅助线 OP 设为橙色虚线', {
+          target: 'auxOP',
+          color: '#F59E0B',
+          dashed: true,
+        }),
+        '看右侧 GeoGebra 里绿色轨迹和两条橙色虚线辅助线 $OP$、$BM$！',
+        '**第 2 步思考**：在 $\\triangle OAP$ 中，$B$ 是 $OA$ 的中点，$M$ 是 $AP$ 的中点，根据**三角形中位线定理**，辅助线 $BM$ 的长度和半径 $OP = 3$ 是什么关系？所以点 $M$ 的轨迹圆心和半径分别是多少？',
+        choicesBlock([
+          'BM = 1/2 OP = 1.5，所以轨迹是以 B(3, 0) 为圆心、半径 1.5 的圆！',
+          '给我提示一下三角形中位线定理',
+        ]),
+      ].join('\n\n'),
+    }
+  }
+
+  return {
+    thinking: '学生已经严格证明了中点轨迹圆，总结 GeoGebra 瓜豆原理 / 中位线轨迹模型。',
+    content: [
+      '完美证明！🎉 根据三角形中位线定理，$BM = \\frac{1}{2} OP = 1.5$ 恒成立，因此动点 $M$ 到定点 $B(3, 0)$ 的距离永远是 $1.5$ —— 轨迹就是以 $B(3, 0)$ 为圆心、半径为 $1.5$ 的圆！',
+      '这就是初中/高中几何里非常有名的 **「瓜豆原理（主从联动轨迹）」**，刚才每一步都是由 AI Agent 直接调用 GeoGebra 的 `Circle`、`Slider`、`Midpoint`、`Locus` 和样式/动画工具逐步生成的！你还可以在画板底部直接输入任何 GeoGebra 指令继续探索。',
+      choicesBlock(['挑战将军饮马最短路径问题', '试试英语长难句流程图拆解']),
+    ].join('\n\n'),
+  }
+}
+
 const detectLesson = (firstPrompt: string, latestPrompt: string): string => {
   const combined = `${firstPrompt}\n${latestPrompt}`
+  if (/geogebra|轨迹|locus|瓜豆|外接圆|切线/i.test(latestPrompt)) {
+    return 'geogebra-locus'
+  }
   if (/英语长难句|The scientist who discovered|complex sentence/i.test(latestPrompt)) {
     return 'english-clause-flowchart'
   }
@@ -879,6 +970,9 @@ const detectLesson = (firstPrompt: string, latestPrompt: string): string => {
     return 'math-shortest-path'
   }
 
+  if (/geogebra|轨迹|locus|瓜豆|外接圆|切线/i.test(combined)) {
+    return 'geogebra-locus'
+  }
   if (/英语长难句|The scientist who discovered|complex sentence/i.test(combined)) {
     return 'english-clause-flowchart'
   }
@@ -934,6 +1028,9 @@ export async function* streamDemoTutorReply(
 
   let turn: DemoTurn
   switch (lessonId) {
+    case 'geogebra-locus':
+      turn = buildGeoGebraLocusTurn(roundIndex, question.content)
+      break
     case 'math-shortest-path':
       turn = buildShortestPathTurn(roundIndex, question.content)
       break

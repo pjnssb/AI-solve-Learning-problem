@@ -6,6 +6,7 @@ import {
   selectCanvasStep,
   setCanvasTab,
   setCanvasWidth,
+  setCoordEngine,
   useCanvasStore,
 } from '../../services/tutor/canvasStore.js'
 import { IconCloseOutline16 } from '../base/icons.js'
@@ -20,12 +21,12 @@ export const TutorCanvasPanel = () => {
   const open = useCanvasStore((state) => state.open)
   const width = useCanvasStore((state) => state.width)
   const activeTab = useCanvasStore((state) => state.activeTab)
+  const coordEngine = useCanvasStore((state) => state.coordEngine)
   const selectedStep = useCanvasStore((state) => state.selectedStep)
   const steps = useCanvasStore((state) => state.steps)
   const board = useCanvasStore(getCurrentCanvasBoard)
 
   const [resizing, setResizing] = useState(false)
-  const [coordEngine, setCoordEngine] = useState<'native' | 'geogebra'>('native')
   const svgRef = useRef<SVGSVGElement>(null)
 
   if (!open) {
@@ -106,7 +107,7 @@ export const TutorCanvasPanel = () => {
               type="button"
               className={clsx(styles.exportBtn, coordEngine === 'geogebra' && styles.engineActive)}
               title="在内置极速坐标引擎与官方 GeoGebra 引擎之间切换"
-              onClick={() => setCoordEngine((prev) => (prev === 'native' ? 'geogebra' : 'native'))}
+              onClick={() => setCoordEngine(coordEngine === 'native' ? 'geogebra' : 'native')}
             >
               {coordEngine === 'geogebra' ? 'GeoGebra ✓' : '切至 GeoGebra'}
             </button>

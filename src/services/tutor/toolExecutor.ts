@@ -594,6 +594,136 @@ export const applyToolCall = (
       }
     }
 
+    case 'geogebra_clear':
+      return {
+        ...state,
+        activeMode: 'coordinate',
+        hasCoordinate: true,
+        coordinate: {
+          ...createEmptyCoordinateState(),
+          preferredEngine: 'geogebra',
+        },
+      }
+
+    case 'geogebra_eval': {
+      const rawCommands = Array.isArray(args.commands)
+        ? strArray(args.commands)
+        : typeof args.command === 'string' && args.command.trim()
+          ? [args.command.trim()]
+          : []
+      if (rawCommands.length === 0) {
+        return state
+      }
+      const id = str(args.id, `ggb-eval-${state.coordinate.geogebraCommands.length + 1}`)
+      const target = typeof args.target === 'string' ? args.target : undefined
+      const styles = target
+        ? [
+            {
+              target,
+              color: typeof args.color === 'string' ? args.color : undefined,
+              dashed: typeof args.dashed === 'boolean' ? args.dashed : undefined,
+              thickness: typeof args.thickness === 'number' ? args.thickness : undefined,
+              trace: typeof args.trace === 'boolean' ? args.trace : undefined,
+              visible: typeof args.visible === 'boolean' ? args.visible : undefined,
+              caption: typeof args.caption === 'string' ? args.caption : undefined,
+            },
+          ]
+        : undefined
+      const nextViewport =
+        args.xMin !== undefined ||
+        args.xMax !== undefined ||
+        args.yMin !== undefined ||
+        args.yMax !== undefined
+          ? {
+              xMin: num(args.xMin, state.coordinate.viewport.xMin),
+              xMax: num(args.xMax, state.coordinate.viewport.xMax),
+              yMin: num(args.yMin, state.coordinate.viewport.yMin),
+              yMax: num(args.yMax, state.coordinate.viewport.yMax),
+            }
+          : state.coordinate.viewport
+      return {
+        ...state,
+        activeMode: 'coordinate',
+        hasCoordinate: true,
+        coordinate: {
+          ...state.coordinate,
+          title: str(args.title, state.coordinate.title),
+          viewport: nextViewport,
+          preferredEngine: 'geogebra',
+          geogebraCommands: [
+            ...state.coordinate.geogebraCommands,
+            { id, commands: rawCommands, styles, stepIndex },
+          ],
+        },
+      }
+    }
+
+    case 'geogebra_style': {
+      const target = str(args.target)
+      if (!target) {
+        return state
+      }
+      const id = str(args.id, `ggb-style-${state.coordinate.geogebraCommands.length + 1}`)
+      return {
+        ...state,
+        activeMode: 'coordinate',
+        hasCoordinate: true,
+        coordinate: {
+          ...state.coordinate,
+          preferredEngine: 'geogebra',
+          geogebraCommands: [
+            ...state.coordinate.geogebraCommands,
+            {
+              id,
+              commands: [],
+              styles: [
+                {
+                  target,
+                  color: typeof args.color === 'string' ? args.color : undefined,
+                  dashed: typeof args.dashed === 'boolean' ? args.dashed : undefined,
+                  thickness: typeof args.thickness === 'number' ? args.thickness : undefined,
+                  trace: typeof args.trace === 'boolean' ? args.trace : undefined,
+                  visible: typeof args.visible === 'boolean' ? args.visible : undefined,
+                  caption: typeof args.caption === 'string' ? args.caption : undefined,
+                },
+              ],
+              stepIndex,
+            },
+          ],
+        },
+      }
+    }
+
+    case 'geogebra_animate': {
+      const target = str(args.target)
+      if (!target) {
+        return state
+      }
+      const id = str(args.id, `ggb-anim-${state.coordinate.geogebraCommands.length + 1}`)
+      return {
+        ...state,
+        activeMode: 'coordinate',
+        hasCoordinate: true,
+        coordinate: {
+          ...state.coordinate,
+          preferredEngine: 'geogebra',
+          geogebraCommands: [
+            ...state.coordinate.geogebraCommands,
+            {
+              id,
+              commands: [],
+              animate: {
+                target,
+                playing: bool(args.playing, true),
+                value: args.value !== undefined ? num(args.value, Number.NaN) : undefined,
+              },
+              stepIndex,
+            },
+          ],
+        },
+      }
+    }
+
     case 'flow_clear':
       return {
         ...state,

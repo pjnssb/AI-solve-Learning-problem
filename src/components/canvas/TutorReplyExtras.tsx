@@ -1,10 +1,13 @@
 import clsx from 'clsx'
 import { jumpToMessageStep } from '../../services/tutor/canvasStore.js'
-import { isFlowchartTool } from '../../services/tutor/toolParser.js'
+import { isFlowchartTool, isGeoGebraTool } from '../../services/tutor/toolParser.js'
 import type { TutorToolCall } from '../../services/tutor/types.js'
 import styles from './TutorReplyExtras.module.css'
 
 const getToolBadge = (call: TutorToolCall): { label: string; kind: 'coord' | 'aux' | 'flow' } => {
+  if (isGeoGebraTool(call.tool)) {
+    return { label: 'GeoGebra 工具', kind: 'coord' }
+  }
   if (isFlowchartTool(call.tool)) {
     return { label: '流程图工具', kind: 'flow' }
   }

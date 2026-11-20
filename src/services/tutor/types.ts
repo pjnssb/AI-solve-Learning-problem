@@ -130,10 +130,35 @@ export type CoordMeasurement = {
   stepIndex: number
 }
 
+export type GeoGebraStyleSpec = {
+  target: string
+  color?: string
+  dashed?: boolean
+  thickness?: number
+  trace?: boolean
+  visible?: boolean
+  caption?: string
+}
+
+export type GeoGebraAnimateSpec = {
+  target: string
+  playing: boolean
+  value?: number
+}
+
+export type GeoGebraCommandStep = {
+  id: string
+  commands: string[]
+  styles?: GeoGebraStyleSpec[]
+  animate?: GeoGebraAnimateSpec
+  stepIndex: number
+}
+
 export type CoordinateState = {
   title: string
   viewport: CoordViewport
   showGrid: boolean
+  preferredEngine?: 'native' | 'geogebra'
   points: CoordPoint[]
   movingPoints: CoordMovingPoint[]
   segments: CoordSegment[]
@@ -142,6 +167,8 @@ export type CoordinateState = {
   circles: CoordCircle[]
   auxiliaryLines: CoordAuxiliaryLine[]
   measurements: CoordMeasurement[]
+  /** 原生 GeoGebra 指令队列（供 AI Agent 直接调用 GeoGebra 全套几何/代数/轨迹/动画能力） */
+  geogebraCommands: GeoGebraCommandStep[]
   /** 工具建议将某个动点平滑移动到指定 t 值 */
   targetT: Record<string, number>
   highlightedIds: string[]
@@ -188,6 +215,10 @@ export type TutorToolName =
   | 'coord_set_t'
   | 'coord_highlight'
   | 'coord_clear'
+  | 'geogebra_eval'
+  | 'geogebra_style'
+  | 'geogebra_animate'
+  | 'geogebra_clear'
   | 'flow_init'
   | 'flow_add_node'
   | 'flow_add_edge'
@@ -242,6 +273,7 @@ export const createEmptyCoordinateState = (): CoordinateState => ({
   circles: [],
   auxiliaryLines: [],
   measurements: [],
+  geogebraCommands: [],
   targetT: {},
   highlightedIds: [],
 })

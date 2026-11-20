@@ -13,6 +13,10 @@ const VALID_TOOLS = new Set<TutorToolName>([
   'coord_set_t',
   'coord_highlight',
   'coord_clear',
+  'geogebra_eval',
+  'geogebra_style',
+  'geogebra_animate',
+  'geogebra_clear',
   'flow_init',
   'flow_add_node',
   'flow_add_edge',
@@ -52,6 +56,14 @@ const defaultSummary = (tool: TutorToolName, args: Record<string, unknown>): str
       return `高亮当前步骤关键元素`
     case 'coord_clear':
       return `清空坐标系画板`
+    case 'geogebra_eval':
+      return `GeoGebra 执行作图指令`
+    case 'geogebra_style':
+      return `GeoGebra 设置对象样式`
+    case 'geogebra_animate':
+      return `GeoGebra 控制动点动画`
+    case 'geogebra_clear':
+      return `重置 GeoGebra 画板`
     case 'flow_init':
       return title ? `创建流程图：${title}` : '创建思维流程图'
     case 'flow_add_node':
@@ -204,6 +216,9 @@ export const parseTutorReply = (rawText: string): ParsedTutorReply => {
   }
 }
 
-export const isCoordinateTool = (tool: TutorToolName): boolean => tool.startsWith('coord_')
+export const isGeoGebraTool = (tool: TutorToolName): boolean => tool.startsWith('geogebra_')
+
+export const isCoordinateTool = (tool: TutorToolName): boolean =>
+  tool.startsWith('coord_') || tool.startsWith('geogebra_')
 
 export const isFlowchartTool = (tool: TutorToolName): boolean => tool.startsWith('flow_')

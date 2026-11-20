@@ -11,6 +11,8 @@ export type GeoGebraAppletApi = {
   setLineStyle: (objName: string, style: number) => void
   setLineThickness: (objName: string, thickness: number) => void
   setLabelVisible: (objName: string, visible: boolean) => void
+  setVisible: (objName: string, visible: boolean) => void
+  setTrace: (objName: string, flag: boolean) => void
   setCaption: (objName: string, caption: string) => void
   setLabelStyle: (objName: string, style: number) => void
   setValue: (objName: string, value: number) => void
@@ -288,6 +290,46 @@ export const syncCoordinateToGeoGebra = (api: GeoGebraAppletApi, coord: Coordina
     api.setColor(name, r, g, b)
     if (circle.dashed) {
       api.setLineStyle(name, 1)
+    }
+  }
+
+  // 6. 执行 AI Agent 直接调用的原生 GeoGebra 指令队列（轨迹、外接圆、切线、角平分线、旋转、CAS、动画等）
+  for (const step of coord.geogebraCommands) {
+    for (const cmd of step.commands) {
+      api.evalCommand(cmd)
+    }
+    for (const st of step.styles ?? []) {
+      if (st.color) {
+        const [sr, sg, sb] = hexToRgb(st.color)
+        api.setColor(st.target, sr, sg, sb)
+      }
+      if (st.dashed !== undefined) {
+        api.setLineStyle(st.target, st.dashed ? 1 : 0)
+      }
+      if (st.thickness !== undefined) {
+        api.setLineThickness(st.target, st.thickness)
+      }
+      if (st.trace !== undefined) {
+        api.setTrace(st.target, st.trace)
+      }
+      if (st.visible !== undefined) {
+        api.setVisible(st.target, st.visible)
+      }
+      if (st.caption) {
+        api.setCaption(st.target, st.caption)
+        api.setLabelStyle(st.target, 3)
+      }
+    }
+    if (step.animate) {
+      if (step.animate.value !== undefined && Number.isFinite(step.animate.value)) {
+        api.setValue(step.animate.target, step.animate.value)
+      }
+      api.setAnimating(step.animate.target, step.animate.playing)
+      if (step.animate.playing) {
+        api.startAnimation()
+      } else {
+        api.stopAnimation()
+      }
     }
   }
 }
