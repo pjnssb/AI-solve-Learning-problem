@@ -46,7 +46,7 @@ export const ModelSelector = ({ className }: { className?: string }) => {
   const filteredGroups = useMemo(() => {
     const q = query.trim().toLowerCase()
     return providers
-      .filter((p) => p.enabled)
+      .filter((p) => p.enabled && (p.protocol === 'demo' || p.apiKey.trim().length > 0))
       .map((provider) => ({
         provider,
         models: q
@@ -85,7 +85,7 @@ export const ModelSelector = ({ className }: { className?: string }) => {
             <input
               type="text"
               className={styles.searchInput}
-              placeholder="搜索模型或服务商（如 GPT-4o / Claude / DeepSeek）"
+              placeholder="搜索已配置的模型..."
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               autoFocus
@@ -93,49 +93,40 @@ export const ModelSelector = ({ className }: { className?: string }) => {
           </div>
 
           <div className={styles.list}>
-            {filteredGroups.map(({ provider, models }) => {
-              const ready =
-                provider.protocol === 'demo' ||
-                provider.id === 'ollama' ||
-                provider.apiKey.trim().length > 0
-              return (
-                <div key={provider.id} className={styles.group}>
-                  <div className={styles.groupHeader}>
-                    <span>{provider.name}</span>
-                    <span className={styles.statusDot}>
-                      <span className={ready ? styles.dotReady : styles.dotUnconfigured} />
-                      {provider.protocol === 'demo' ? '免 Key 体验' : ready ? '已就绪' : '需填 Key'}
-                    </span>
-                  </div>
-                  {models.map((model) => {
-                    const selected = provider.id === activeProviderId && model.id === activeModelId
-                    return (
-                      <button
-                        key={`${provider.id}:${model.id}`}
-                        type="button"
-                        className={clsx(styles.option, selected && styles.optionSelected)}
-                        onClick={() => {
-                          selectProviderModel(provider.id, model.id)
-                          setOpen(false)
-                          setQuery('')
-                          if (!ready) {
-                            openSettings('providers')
-                          }
-                        }}
-                      >
-                        <span className={styles.optionMain}>
-                          <span className={styles.optionTitle}>{model.name}</span>
-                          {model.description ? (
-                            <span className={styles.optionDesc}>{model.description}</span>
-                          ) : null}
-                        </span>
-                        {selected ? <span className={styles.check}>✓</span> : null}
-                      </button>
-                    )
-                  })}
+            {filteredGroups.map(({ provider, models }) => (
+              <div key={provider.id} className={styles.group}>
+                <div className={styles.groupHeader}>
+                  <span>{provider.name}</span>
+                  <span className={styles.statusDot}>
+                    <span className={styles.dotReady} />
+                    {provider.protocol === 'demo' ? '免 Key 体验' : '已就绪'}
+                  </span>
                 </div>
-              )
-            })}
+                {models.map((model) => {
+                  const selected = provider.id === activeProviderId && model.id === activeModelId
+                  return (
+                    <button
+                      key={`${provider.id}:${model.id}`}
+                      type="button"
+                      className={clsx(styles.option, selected && styles.optionSelected)}
+                      onClick={() => {
+                        selectProviderModel(provider.id, model.id)
+                        setOpen(false)
+                        setQuery('')
+                      }}
+                    >
+                      <span className={styles.optionMain}>
+                        <span className={styles.optionTitle}>{model.name}</span>
+                        {model.description ? (
+                          <span className={styles.optionDesc}>{model.description}</span>
+                        ) : null}
+                      </span>
+                      {selected ? <span className={styles.check}>✓</span> : null}
+                    </button>
+                  )
+                })}
+              </div>
+            ))}
           </div>
 
           <div className={styles.footer}>
@@ -147,7 +138,7 @@ export const ModelSelector = ({ className }: { className?: string }) => {
                 openSettings('providers')
               }}
             >
-              管理多服务商 / API Key / 自定义接口...
+              配置更多服务商 / API Key / 自定义网关...
             </button>
           </div>
         </div>

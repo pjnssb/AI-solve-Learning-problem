@@ -122,8 +122,7 @@ export const ProvidersPanel = () => {
     <div className={styles.wrap}>
       <div className={styles.providerPills}>
         {providers.map((p) => {
-          const configured =
-            p.protocol === 'demo' || p.id === 'ollama' || p.apiKey.trim().length > 0
+          const configured = p.protocol === 'demo' || p.apiKey.trim().length > 0
           return (
             <button
               key={p.id}
@@ -202,6 +201,9 @@ export const ProvidersPanel = () => {
           <div className={styles.field}>
             <label className={styles.fieldLabel}>API Base URL（支持自动补全 /v1）</label>
             <input
+              type="text"
+              autoComplete="off"
+              spellCheck={false}
               className={styles.input}
               placeholder="https://api.example.com/v1"
               value={customForm.baseUrl}
@@ -213,7 +215,9 @@ export const ProvidersPanel = () => {
           <div className={styles.field}>
             <label className={styles.fieldLabel}>API Key</label>
             <input
-              type="password"
+              type="text"
+              autoComplete="off"
+              spellCheck={false}
               className={styles.input}
               placeholder="sk-..."
               value={customForm.apiKey}
@@ -393,12 +397,16 @@ export const ProvidersPanel = () => {
               </div>
 
               <div className={styles.field}>
-                <label className={styles.fieldLabel}>API Key（仅保存在本地浏览器）</label>
+                <label className={styles.fieldLabel}>
+                  API Key（仅保存在本地浏览器，明文显示方便核对）
+                </label>
                 <input
-                  type="password"
+                  type="text"
+                  autoComplete="off"
+                  spellCheck={false}
                   className={styles.input}
                   value={current.apiKey}
-                  placeholder="请输入该服务商的 API Key"
+                  placeholder="请输入该服务商的 API Key（填完后将自动出现在顶部模型列表）"
                   onChange={(event) => {
                     const value = event.target.value
                     updateProviderConfig(current.id, { apiKey: value })

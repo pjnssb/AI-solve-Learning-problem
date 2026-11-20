@@ -186,7 +186,7 @@ export const DEFAULT_PROVIDERS: ProviderConfig[] = [
     name: 'Ollama (本地模型)',
     protocol: 'openai',
     baseUrl: 'http://localhost:11434/v1',
-    apiKey: 'ollama',
+    apiKey: '',
     enabled: true,
     models: [
       { id: 'qwen2.5:14b', name: 'Qwen 2.5 14B (本地)' },
