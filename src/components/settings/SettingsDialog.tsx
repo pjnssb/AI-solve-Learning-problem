@@ -62,6 +62,7 @@ const sections: { value: SettingsSection; label: TranslationKey; icon: ReactNode
 
 const SettingsContent = () => {
   const t = useTranslate()
+  const locale = useSettings((state) => state.locale)
   const isMobile = useIsMobile()
   // 打开时按调用方指定的分组选中，之后在弹窗内切换
   const [section, setSection] = useState(() => useSettingsDialog.getState().section)
@@ -106,6 +107,12 @@ const SettingsContent = () => {
               <LocaleSetting />
               <TtsVoiceSetting />
               <LocationSetting />
+              <SettingCell
+                label={locale === 'en-US' ? 'App Version' : '当前版本'}
+                description={`v${__APP_VERSION__}`}
+                status={null}
+                action={null}
+              />
             </>
           ) : section === 'providers' ? (
             <ProvidersPanel />

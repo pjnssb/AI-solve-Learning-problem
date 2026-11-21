@@ -1,8 +1,9 @@
+import { execSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from '@rspack/cli'
-import { rspack, type Configuration } from '@rspack/core'
+import { rspack, type Compiler, type Configuration } from '@rspack/core'
 
 const dev = process.env.NODE_ENV !== 'production'
 const targets = ['chrome >= 105', 'edge >= 105', 'safari >= 16', 'firefox >= 110']
@@ -10,6 +11,80 @@ const root = path.dirname(fileURLToPath(import.meta.url))
 const { version } = JSON.parse(
   readFileSync(new URL('./package.json', import.meta.url), 'utf8')
 ) as { version: string }
+
+const resolveBuildVersion = (): string => {
+  const now = new Date()
+  const stamp = [
+    now.getUTCFullYear(),
+    String(now.getUTCMonth() + 1).padStart(2, '0'),
+    String(now.getUTCDate()).padStart(2, '0'),
+    String(now.getUTCHours()).padStart(2, '0'),
+    String(now.getUTCMinutes()).padStart(2, '0'),
+    String(now.getUTCSeconds()).padStart(2, '0'),
+  ].join('')
+
+  let sha = process.env.GITHUB_SHA?.slice(0, 7) ?? ''
+  if (!sha) {
+    try {
+      sha = execSync('git rev-parse --short HEAD', { cwd: root, stdio: ['ignore', 'pipe', 'ignore'] })
+        .toString()
+        .trim()
+    } catch {
+      sha = ''
+    }
+  }
+  const runNum = process.env.GITHUB_RUN_NUMBER ? `r${process.env.GITHUB_RUN_NUMBER}` : ''
+  return [version, stamp, runNum, sha].filter(Boolean).join('-')
+}
+
+const buildVersion = resolveBuildVersion()
+
+/**
+ * 为构建产物注入版本号与防缓存标识：
+ * 1. 输出 version.json 供运行期校验远端是否有新发布；
+ * 2. 为 index.html 中引用的静态 JS/CSS 资源 URL 统一追加 ?v=<buildVersion> 查询参数。
+ */
+class VersionAssetsPlugin {
+  constructor(private readonly appVersion: string) {}
+
+  apply(compiler: Compiler) {
+    compiler.hooks.thisCompilation.tap('VersionAssetsPlugin', (compilation) => {
+      compilation.hooks.processAssets.tap(
+        {
+          name: 'VersionAssetsPlugin',
+          stage: rspack.Compilation.PROCESS_ASSETS_STAGE_REPORT,
+        },
+        () => {
+          const versionJson = JSON.stringify(
+            {
+              version: this.appVersion,
+              builtAt: new Date().toISOString(),
+            },
+            null,
+            2
+          )
+          compilation.emitAsset('version.json', new rspack.sources.RawSource(versionJson))
+
+          const htmlAsset = compilation.getAsset('index.html')
+          if (htmlAsset) {
+            const rawHtml = htmlAsset.source.source().toString()
+            const vParam = `v=${encodeURIComponent(this.appVersion)}`
+            const versionedHtml = rawHtml
+              .replace(
+                /(<script\b[^>]*\bsrc=["'])(static\/[^"'?]+)(["'])/gi,
+                `$1$2?${vParam}$3`
+              )
+              .replace(
+                /(<link\b[^>]*\bhref=["'])(static\/[^"'?]+)(["'])/gi,
+                `$1$2?${vParam}$3`
+              )
+            compilation.updateAsset('index.html', new rspack.sources.RawSource(versionedHtml))
+          }
+        }
+      )
+    })
+  }
+}
 
 const cssLoader = {
   loader: 'builtin:lightningcss-loader',
@@ -78,9 +153,14 @@ export const createConfig = ({
     new rspack.HtmlRspackPlugin({
       template: './src/index.html',
       scriptLoading: 'defer',
-      meta: { 'application-version': version },
+      meta: { 'application-version': buildVersion },
     }),
-    new rspack.DefinePlugin({ __API_ORIGIN__: JSON.stringify(apiOrigin) }),
+    new rspack.DefinePlugin({
+      __API_ORIGIN__: JSON.stringify(apiOrigin),
+      __APP_VERSION__: JSON.stringify(buildVersion),
+      __IS_PROD__: JSON.stringify(!dev),
+    }),
+    new VersionAssetsPlugin(buildVersion),
     new rspack.CopyRspackPlugin({
       patterns: [{ from: path.resolve(root, 'LICENSE'), to: 'LICENSE', toType: 'file' }],
     }),

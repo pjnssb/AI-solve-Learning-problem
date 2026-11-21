@@ -32,6 +32,32 @@
   font-size: 14px;
 }
 
+.updateBanner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  background-color: var(--dsw-alias-button-ghost-active-fill);
+  color: var(--dsw-alias-label-primary);
+  font-size: 12.5px;
+}
+
+.updateDismiss {
+  border: none;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+
+.updateDismiss:hover {
+  color: var(--dsw-alias-label-primary);
+}
+
 .loadingView {
   position: absolute;
   inset: 0;

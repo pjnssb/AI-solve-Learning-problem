@@ -26,6 +26,7 @@ import { stopReadAloud } from '../services/speech/readAloud.js'
 import { CollapsedSider } from '../components/sider/CollapsedSider.js'
 import { closeMobileSider } from '../components/sider/mobileSiderState.js'
 import { MobileSider, Sider } from '../components/sider/Sider.js'
+import { useVersionCheck } from '../services/versionCheck.js'
 import styles from './App.module.css'
 
 export const App = () => {
@@ -52,6 +53,7 @@ export const App = () => {
   )
   const activeId = useChatStore((state) => state.activeId)
   const visibleMessages = useMemo(() => (session ? getVisibleMessages(session) : []), [session])
+  const { latestVersion, applyUpdate, dismissUpdate } = useVersionCheck()
 
   usePreventPageScroll(isMobile)
 
@@ -84,6 +86,25 @@ export const App = () => {
       <div ref={frameRef} className={styles.frame}>
         {isMobile ? <MobileSider /> : siderCollapsed ? null : <Sider />}
         <main className={styles.main}>
+          {latestVersion ? (
+            <div className={styles.updateBanner} role="status">
+              <span>
+                {locale === 'en-US'
+                  ? `A new version (v${latestVersion}) is available.`
+                  : `发现新版本（v${latestVersion}），刷新即可绕过浏览器缓存加载最新功能`}
+              </span>
+              <Button variant="outlined" size="s" onClick={applyUpdate}>
+                {locale === 'en-US' ? 'Update now' : '立即更新'}
+              </Button>
+              <button
+                type="button"
+                className={styles.updateDismiss}
+                onClick={dismissUpdate}
+              >
+                {locale === 'en-US' ? 'Later' : '稍后'}
+              </button>
+            </div>
+          ) : null}
           {saveError ? (
             <div className={styles.saveError} role="alert">
               <span>{t('sessionSaveFailed')}</span>
