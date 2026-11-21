@@ -268,6 +268,84 @@ export const computePolygonArea = (points: { x: number; y: number }[]): number =
   return Math.abs(sum) * 0.5
 }
 
+const extractXY = (args: Record<string, unknown>): { x: number; y: number } | null => {
+  const pair = numPair(args.coords) ?? numPair(args.pos) ?? numPair(args.point)
+  if (pair) {
+    return { x: pair[0], y: pair[1] }
+  }
+  if (typeof args.position === 'object' && args.position !== null && !Array.isArray(args.position)) {
+    const pos = args.position as Record<string, unknown>
+    const px = num(pos.x, Number.NaN)
+    const py = num(pos.y, Number.NaN)
+    if (Number.isFinite(px) && Number.isFinite(py)) {
+      return { x: px, y: py }
+    }
+  }
+  const x = num(args.x, Number.NaN)
+  const y = num(args.y, Number.NaN)
+  if (Number.isFinite(x) && Number.isFinite(y)) {
+    return { x, y }
+  }
+  return null
+}
+
+const normalizeViewport = (
+  rawXMin: number,
+  rawXMax: number,
+  rawYMin: number,
+  rawYMax: number
+) => {
+  let xMin = Math.min(rawXMin, rawXMax)
+  let xMax = Math.max(rawXMin, rawXMax)
+  let yMin = Math.min(rawYMin, rawYMax)
+  let yMax = Math.max(rawYMin, rawYMax)
+  if (xMax - xMin < 1) {
+    xMin -= 2
+    xMax += 2
+  }
+  if (yMax - yMin < 1) {
+    yMin -= 2
+    yMax += 2
+  }
+  return { xMin, xMax, yMin, yMax }
+}
+
+const expandViewportForPoints = (
+  coord: CoordinateState,
+  coords: { x: number; y: number }[]
+): CoordinateState['viewport'] => {
+  if (coord.hasExplicitViewport || coords.length === 0) {
+    return coord.viewport
+  }
+  let { xMin, xMax, yMin, yMax } = coord.viewport
+  let changed = false
+  for (const pt of coords) {
+    if (!Number.isFinite(pt.x) || !Number.isFinite(pt.y)) {
+      continue
+    }
+    if (pt.x <= xMin + 0.4) {
+      xMin = Math.floor(pt.x - 1.5)
+      changed = true
+    }
+    if (pt.x >= xMax - 0.4) {
+      xMax = Math.ceil(pt.x + 1.5)
+      changed = true
+    }
+    if (pt.y <= yMin + 0.4) {
+      yMin = Math.floor(pt.y - 1.5)
+      changed = true
+    }
+    if (pt.y >= yMax - 0.4) {
+      yMax = Math.ceil(pt.y + 1.5)
+      changed = true
+    }
+  }
+  return changed ? { xMin, xMax, yMin, yMax } : coord.viewport
+}
+
+const strEndpointId = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim() ? value.trim() : undefined
+
 /**
  * 纯函数工具执行器：按 Agent 发出的单个工具调用增量更新画板状态。
  */
@@ -286,12 +364,18 @@ export const applyToolCall = (
       }
 
     case 'coord_setup': {
-      const nextViewport = {
-        xMin: num(args.xMin, state.coordinate.viewport.xMin),
-        xMax: num(args.xMax, state.coordinate.viewport.xMax),
-        yMin: num(args.yMin, state.coordinate.viewport.yMin),
-        yMax: num(args.yMax, state.coordinate.viewport.yMax),
-      }
+      const vpObj =
+        typeof args.viewport === 'object' && args.viewport !== null && !Array.isArray(args.viewport)
+          ? (args.viewport as Record<string, unknown>)
+          : args
+      const xRange = numPair(args.xRange)
+      const yRange = numPair(args.yRange)
+      const nextViewport = normalizeViewport(
+        xRange ? xRange[0] : num(vpObj.xMin, state.coordinate.viewport.xMin),
+        xRange ? xRange[1] : num(vpObj.xMax, state.coordinate.viewport.xMax),
+        yRange ? yRange[0] : num(vpObj.yMin, state.coordinate.viewport.yMin),
+        yRange ? yRange[1] : num(vpObj.yMax, state.coordinate.viewport.yMax)
+      )
       return {
         ...state,
         activeMode: 'coordinate',
@@ -300,6 +384,7 @@ export const applyToolCall = (
           ...state.coordinate,
           title: str(args.title, state.coordinate.title),
           viewport: nextViewport,
+          hasExplicitViewport: true,
           showGrid: bool(args.showGrid, state.coordinate.showGrid),
         },
       }
@@ -307,13 +392,12 @@ export const applyToolCall = (
 
     case 'coord_plot_point': {
       const id = str(args.id, `P${state.coordinate.points.length + 1}`)
-      const x = num(args.x, 0)
-      const y = num(args.y, 0)
+      const xy = extractXY(args) ?? { x: 0, y: 0 }
       const point: CoordPoint = {
         id,
-        label: str(args.label, `${id}(${x}, ${y})`),
-        x,
-        y,
+        label: str(args.label, `${id}(${xy.x}, ${xy.y})`),
+        x: xy.x,
+        y: xy.y,
         color: str(args.color, '#3964FE'),
         stepIndex,
       }
@@ -323,6 +407,7 @@ export const applyToolCall = (
         hasCoordinate: true,
         coordinate: {
           ...state.coordinate,
+          viewport: expandViewportForPoints(state.coordinate, [xy]),
           points: upsertById(state.coordinate.points, point),
           highlightedIds: [id],
         },
@@ -331,11 +416,18 @@ export const applyToolCall = (
 
     case 'coord_add_moving_point': {
       const id = str(args.id, 'P')
-      const pathType = str(args.pathType, 'segment')
+      const inferredType = str(
+        args.pathType,
+        typeof args.xExpr === 'string' && typeof args.yExpr === 'string'
+          ? 'parametric'
+          : typeof args.expr === 'string' && args.expr.trim()
+            ? 'function'
+            : 'segment'
+      )
       let path: MovingPointPath
-      if (pathType === 'function') {
+      if (inferredType === 'function') {
         path = { type: 'function', expr: str(args.expr, 'x') }
-      } else if (pathType === 'parametric') {
+      } else if (inferredType === 'parametric') {
         path = {
           type: 'parametric',
           xExpr: str(args.xExpr, 'cos(t)'),
@@ -344,15 +436,24 @@ export const applyToolCall = (
       } else {
         path = {
           type: 'segment',
-          fromId: typeof args.fromId === 'string' ? args.fromId : undefined,
-          toId: typeof args.toId === 'string' ? args.toId : undefined,
+          fromId: strEndpointId(args.fromId) ?? strEndpointId(args.from),
+          toId: strEndpointId(args.toId) ?? strEndpointId(args.to),
           from: numPair(args.from) ?? [0, 0],
           to: numPair(args.to) ?? [6, 0],
         }
       }
-      const tMin = num(args.tMin, 0)
-      const tMax = num(args.tMax, pathType === 'segment' ? 1 : 4)
-      const initialT = num(args.initialT, (tMin + tMax) / 2)
+      const defaultTMin = inferredType === 'function' ? state.coordinate.viewport.xMin : 0
+      const defaultTMax =
+        inferredType === 'function'
+          ? state.coordinate.viewport.xMax
+          : inferredType === 'segment'
+            ? 1
+            : 4
+      const rawTMin = num(args.tMin, defaultTMin)
+      const rawTMax = num(args.tMax, defaultTMax)
+      const tMin = Math.min(rawTMin, rawTMax)
+      const tMax = Math.max(rawTMin, rawTMax)
+      const initialT = Math.max(tMin, Math.min(tMax, num(args.initialT, (tMin + tMax) / 2)))
       const mp: CoordMovingPoint = {
         id,
         label: str(args.label, id),
@@ -363,12 +464,17 @@ export const applyToolCall = (
         color: str(args.color, '#EF4444'),
         stepIndex,
       }
+      const extraCoords: { x: number; y: number }[] = []
+      if (path.type === 'segment' && !path.fromId && path.from && !path.toId && path.to) {
+        extraCoords.push({ x: path.from[0], y: path.from[1] }, { x: path.to[0], y: path.to[1] })
+      }
       return {
         ...state,
         activeMode: 'coordinate',
         hasCoordinate: true,
         coordinate: {
           ...state.coordinate,
+          viewport: expandViewportForPoints(state.coordinate, extraCoords),
           movingPoints: upsertById(state.coordinate.movingPoints, mp),
           highlightedIds: [id],
         },
@@ -376,11 +482,19 @@ export const applyToolCall = (
     }
 
     case 'coord_draw_segment': {
+      const pointsList = Array.isArray(args.points) ? args.points : undefined
       const fromId =
-        typeof args.fromId === 'string' && args.fromId.trim() ? args.fromId.trim() : undefined
-      const toId = typeof args.toId === 'string' && args.toId.trim() ? args.toId.trim() : undefined
-      const from = numPair(args.from)
-      const to = numPair(args.to)
+        strEndpointId(args.fromId) ??
+        strEndpointId(args.from) ??
+        strEndpointId(args.start) ??
+        strEndpointId(pointsList?.[0])
+      const toId =
+        strEndpointId(args.toId) ??
+        strEndpointId(args.to) ??
+        strEndpointId(args.end) ??
+        strEndpointId(pointsList?.[1])
+      const from = numPair(args.from) ?? numPair(args.start) ?? numPair(pointsList?.[0])
+      const to = numPair(args.to) ?? numPair(args.end) ?? numPair(pointsList?.[1])
       if ((!fromId && !from) || (!toId && !to)) {
         return state
       }
@@ -404,12 +518,17 @@ export const applyToolCall = (
         dashed: bool(args.dashed, false),
         stepIndex,
       }
+      const extraCoords = [
+        ...(from ? [{ x: from[0], y: from[1] }] : []),
+        ...(to ? [{ x: to[0], y: to[1] }] : []),
+      ]
       return {
         ...state,
         activeMode: 'coordinate',
         hasCoordinate: true,
         coordinate: {
           ...state.coordinate,
+          viewport: expandViewportForPoints(state.coordinate, extraCoords),
           segments: upsertById(state.coordinate.segments, segment),
           highlightedIds: [id],
         },
@@ -444,7 +563,35 @@ export const applyToolCall = (
     }
 
     case 'coord_draw_polygon': {
-      const vertexIds = strArray(args.vertexIds)
+      let vertexIds = strArray(args.vertexIds)
+      if (vertexIds.length === 0) {
+        vertexIds = strArray(args.vertices)
+      }
+      let extraPoints = state.coordinate.points
+      const rawPoints = Array.isArray(args.points) ? args.points : undefined
+      if (vertexIds.length === 0 && rawPoints) {
+        const stringIds = strArray(rawPoints)
+        if (stringIds.length >= 3) {
+          vertexIds = stringIds
+        } else {
+          const pairs = rawPoints.map(numPair).filter((p): p is [number, number] => Boolean(p))
+          if (pairs.length >= 3) {
+            const polyIdSeed = str(args.id, `poly-${state.coordinate.polygons.length + 1}`)
+            vertexIds = pairs.map(([x, y], idx) => {
+              const pid = `${polyIdSeed}_v${idx + 1}`
+              extraPoints = upsertById(extraPoints, {
+                id: pid,
+                label: '',
+                x,
+                y,
+                color: str(args.stroke, '#3964FE'),
+                stepIndex,
+              })
+              return pid
+            })
+          }
+        }
+      }
       if (vertexIds.length < 3) {
         return state
       }
@@ -464,6 +611,7 @@ export const applyToolCall = (
         hasCoordinate: true,
         coordinate: {
           ...state.coordinate,
+          points: extraPoints,
           polygons: upsertById(state.coordinate.polygons, poly),
           highlightedIds: [id],
         },
@@ -471,16 +619,31 @@ export const applyToolCall = (
     }
 
     case 'coord_draw_circle': {
-      const centerId = str(args.centerId)
+      let centerId = strEndpointId(args.centerId) ?? strEndpointId(args.center)
+      let extraPoints = state.coordinate.points
+      const centerPair = numPair(args.center)
+      if (!centerId && centerPair) {
+        centerId = `center_${str(args.id, String(state.coordinate.circles.length + 1))}`
+        extraPoints = upsertById(extraPoints, {
+          id: centerId,
+          label: `${centerId}(${centerPair[0]}, ${centerPair[1]})`,
+          x: centerPair[0],
+          y: centerPair[1],
+          color: str(args.color, '#0EA5E9'),
+          stepIndex,
+        })
+      }
       if (!centerId) {
         return state
       }
       const id = str(args.id, `circle-${centerId}`)
+      const rawRadius = args.radius ?? args.r
       const circle: CoordCircle = {
         id,
         centerId,
-        radius: args.radius !== undefined ? num(args.radius, 1) : undefined,
-        radiusPointId: typeof args.radiusPointId === 'string' ? args.radiusPointId : undefined,
+        radius: rawRadius !== undefined ? Math.abs(num(rawRadius, 1)) : undefined,
+        radiusPointId:
+          strEndpointId(args.radiusPointId) ?? strEndpointId(args.radiusPoint) ?? undefined,
         color: str(args.color, '#0EA5E9'),
         dashed: bool(args.dashed, false),
         label: typeof args.label === 'string' ? args.label : undefined,
@@ -492,6 +655,7 @@ export const applyToolCall = (
         hasCoordinate: true,
         coordinate: {
           ...state.coordinate,
+          points: extraPoints,
           circles: upsertById(state.coordinate.circles, circle),
           highlightedIds: [id],
         },
@@ -499,7 +663,7 @@ export const applyToolCall = (
     }
 
     case 'coord_draw_auxiliary_line': {
-      const fromId = str(args.fromId)
+      const fromId = strEndpointId(args.fromId) ?? strEndpointId(args.from)
       if (!fromId) {
         return state
       }
@@ -509,17 +673,23 @@ export const applyToolCall = (
           ? rawKind
           : 'connect'
       const id = str(args.id, `aux-${state.coordinate.auxiliaryLines.length + 1}`)
-      const axis = args.axis === 'x' || args.axis === 'y' ? args.axis : undefined
+      const axis =
+        args.axis === 'x' || args.axis === 'y'
+          ? args.axis
+          : args.line === 'x' || args.line === 'y'
+            ? args.line
+            : undefined
+      const targetLineArr = strArray(args.targetLine)
       const aux: CoordAuxiliaryLine = {
         id,
         kind,
         fromId,
-        toId: typeof args.toId === 'string' ? args.toId : undefined,
+        toId: strEndpointId(args.toId) ?? strEndpointId(args.to),
         targetLineFromId:
-          typeof args.targetLineFromId === 'string' ? args.targetLineFromId : undefined,
-        targetLineToId: typeof args.targetLineToId === 'string' ? args.targetLineToId : undefined,
+          strEndpointId(args.targetLineFromId) ?? strEndpointId(targetLineArr[0]),
+        targetLineToId: strEndpointId(args.targetLineToId) ?? strEndpointId(targetLineArr[1]),
         axis,
-        derivedPointId: typeof args.derivedPointId === 'string' ? args.derivedPointId : undefined,
+        derivedPointId: strEndpointId(args.derivedPointId),
         derivedPointLabel:
           typeof args.derivedPointLabel === 'string' ? args.derivedPointLabel : undefined,
         label: typeof args.label === 'string' ? args.label : undefined,
@@ -576,7 +746,7 @@ export const applyToolCall = (
     }
 
     case 'coord_set_t': {
-      const pointId = str(args.pointId, 'P')
+      const pointId = str(args.pointId, str(args.id, 'P'))
       const t = num(args.t, Number.NaN)
       if (!Number.isFinite(t)) {
         return state
@@ -609,12 +779,11 @@ export const applyToolCall = (
       }
       const id = str(args.id, `note-${state.coordinate.annotations.length + 1}`)
       const anchorPointId =
-        typeof args.anchorPointId === 'string' && args.anchorPointId.trim()
-          ? args.anchorPointId.trim()
-          : undefined
-      const x = args.x !== undefined ? num(args.x, 0) : undefined
-      const y = args.y !== undefined ? num(args.y, 0) : undefined
-      if (!anchorPointId && (x === undefined || y === undefined)) {
+        strEndpointId(args.anchorPointId) ??
+        strEndpointId(args.anchor) ??
+        strEndpointId(args.pointId)
+      const xy = extractXY(args)
+      if (!anchorPointId && !xy) {
         return state
       }
       return {
@@ -626,8 +795,8 @@ export const applyToolCall = (
           annotations: upsertById(state.coordinate.annotations, {
             id,
             text: text.trim(),
-            x,
-            y,
+            x: xy?.x,
+            y: xy?.y,
             anchorPointId,
             color: str(args.color, '#3964FE'),
             stepIndex,
@@ -706,7 +875,7 @@ export const applyToolCall = (
 
     case 'flow_add_node': {
       const id = str(args.id, `node-${state.flowchart.nodes.length + 1}`)
-      const rawKind = str(args.kind, 'process')
+      const rawKind = str(args.kind, str(args.type, 'process'))
       const kind: FlowNodeKind =
         rawKind === 'start' ||
         rawKind === 'decision' ||
@@ -721,10 +890,17 @@ export const applyToolCall = (
           : kind === 'question'
             ? 'pending'
             : 'active'
+      const label =
+        str(args.label, '') ||
+        str(args.title, '') ||
+        str(args.text, '') ||
+        str(args.name, '') ||
+        id
+      const sublabelRaw = args.sublabel ?? args.description ?? args.desc ?? args.detail
       const node: FlowNode = {
         id,
-        label: str(args.label, id),
-        sublabel: typeof args.sublabel === 'string' ? args.sublabel : undefined,
+        label,
+        sublabel: typeof sublabelRaw === 'string' && sublabelRaw.trim() ? sublabelRaw : undefined,
         kind,
         status,
         stepIndex,
@@ -747,10 +923,7 @@ export const applyToolCall = (
         return state
       }
       const existing = state.flowchart.nodes.find((n) => n.id === id)
-      if (!existing) {
-        return state
-      }
-      const rawKind = str(args.kind, existing.kind)
+      const rawKind = str(args.kind, str(args.type, existing?.kind ?? 'process'))
       const kind: FlowNodeKind =
         rawKind === 'start' ||
         rawKind === 'process' ||
@@ -759,13 +932,20 @@ export const applyToolCall = (
         rawKind === 'result' ||
         rawKind === 'grammar'
           ? rawKind
-          : existing.kind
+          : (existing?.kind ?? 'process')
+      const nextLabel =
+        str(args.label, '') || str(args.title, '') || str(args.text, '') || existing?.label || id
+      const sublabelRaw = args.sublabel ?? args.description ?? args.desc ?? args.detail
       const updated: FlowNode = {
-        ...existing,
-        label: str(args.label, existing.label),
-        sublabel: typeof args.sublabel === 'string' ? args.sublabel : existing.sublabel,
+        id,
+        label: nextLabel,
+        sublabel:
+          typeof sublabelRaw === 'string'
+            ? sublabelRaw.trim() || undefined
+            : existing?.sublabel,
         kind,
         status: args.status === 'pending' || args.status === 'active' ? args.status : 'solved',
+        stepIndex: existing?.stepIndex ?? stepIndex,
       }
       return {
         ...state,
@@ -780,8 +960,8 @@ export const applyToolCall = (
     }
 
     case 'flow_add_edge': {
-      const from = str(args.from)
-      const to = str(args.to)
+      const from = strEndpointId(args.from) ?? strEndpointId(args.source) ?? strEndpointId(args.fromId)
+      const to = strEndpointId(args.to) ?? strEndpointId(args.target) ?? strEndpointId(args.toId)
       if (!from || !to) {
         return state
       }

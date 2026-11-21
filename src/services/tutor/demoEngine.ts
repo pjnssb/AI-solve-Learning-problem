@@ -2,6 +2,8 @@ import type { MessageStreamEvent } from '../api/types.js'
 import { getContextRounds } from '../chat/reply.js'
 import type { Message, UserMessage } from '../chat/types.js'
 import type { Locale } from '../settings.js'
+import { getCurrentCanvasBoard, useCanvasStore } from './canvasStore.js'
+import { resolvePointCoords } from './toolExecutor.js'
 
 export type GuidedLesson = {
   id: string
@@ -911,6 +913,50 @@ const sleep = (ms: number, signal: AbortSignal) =>
     signal.addEventListener('abort', onAbort, { once: true })
   })
 
+const buildLiveCanvasProbeTurn = (userText: string): DemoTurn | null => {
+  const isCoordProbe = /结合我现在坐标系画板上的动点位置/.test(userText)
+  const flowMatch = userText.match(/(?:待推导节点|流程图中的)「([^」]+)」/)
+  if (!isCoordProbe && !flowMatch) {
+    return null
+  }
+  const state = useCanvasStore.getState()
+  const board = getCurrentCanvasBoard(state)
+
+  if (isCoordProbe && board.hasCoordinate) {
+    const mp = board.coordinate.movingPoints[0]
+    const pos = mp ? resolvePointCoords(board.coordinate, mp.id, state.tValues) : null
+    const coordText = pos ? `$(${pos.x.toFixed(2)}, ${pos.y.toFixed(2)})$` : '当前位置'
+    const userNote =
+      state.userPoints.length > 0 || state.userSegments.length > 0 || state.userFunctions.length > 0
+        ? `\n\n我同时看到你在画板上自己添加了 ${state.userPoints.length} 个探索点、${state.userSegments.length} 条探索线段和 ${state.userFunctions.length} 条函数曲线，非常棒的主动尝试！`
+        : ''
+    return {
+      thinking: '读取学生当前画板上的动点实时坐标与自绘元素，给出针对性苏格拉底反馈。',
+      content: [
+        `我看到你把动点${mp ? ` $${mp.label}$ ` : ''}拖到了 ${coordText}！${userNote}`,
+        '试着对比一下左上角实时测量指标的数值变化：当你向左或向右微调它时，指标是变大还是变小？这说明最值点应该在更靠近哪一侧的位置？',
+        choicesBlock(['继续下一步推导', '给我一点提示']),
+      ].join('\n\n'),
+    }
+  }
+
+  if (flowMatch) {
+    const nodeLabel = flowMatch[1]
+    const node = board.flowchart.nodes.find((n) => n.label === nodeLabel)
+    return {
+      thinking: `针对学生在流程图上点选的节点「${nodeLabel}」提供聚焦引导。`,
+      content: [
+        `你点选了流程图里的节点：**「${nodeLabel}」**${node?.sublabel ? `（${node.sublabel}）` : ''}。`,
+        node?.kind === 'question' && (state.flowStatusOverrides[node.id] ?? node.status) !== 'solved'
+          ? '这是一个待你破解的关键问题节点！试着回顾上一步给出的已知条件，写出你的判断或点击下方思路继续推进。'
+          : '这一步承接了前面节点的推导条件，把核心结论固定下来后，才能继续向下一层分支推进。你想对这一步再确认什么细节，还是继续往下推导？',
+        choicesBlock(['给我一点提示', '继续推进下一步']),
+      ].join('\n\n'),
+    }
+  }
+  return null
+}
+
 /**
  * 流式输出内置演示导师回复：真实模拟「思考 -> 分步讲解 -> 实时调用 Agent 画板工具 -> 停下来提问」的节奏！
  */
@@ -932,23 +978,28 @@ export async function* streamDemoTutorReply(
     lessonId !== 'custom'
   const roundIndex = switchedMidSession ? 0 : rounds.length
 
+  const probeTurn = buildLiveCanvasProbeTurn(question.content)
   let turn: DemoTurn
-  switch (lessonId) {
-    case 'math-shortest-path':
-      turn = buildShortestPathTurn(roundIndex, question.content)
-      break
-    case 'math-parabola-area':
-      turn = buildParabolaAreaTurn(roundIndex, question.content)
-      break
-    case 'english-clause-flowchart':
-      turn = buildEnglishClauseTurn(roundIndex, question.content)
-      break
-    case 'math-quadratic-flowchart':
-      turn = buildQuadraticFlowTurn(roundIndex, question.content)
-      break
-    default:
-      turn = buildCustomDemoTurn(roundIndex, question.content, firstUserText)
-      break
+  if (probeTurn) {
+    turn = probeTurn
+  } else {
+    switch (lessonId) {
+      case 'math-shortest-path':
+        turn = buildShortestPathTurn(roundIndex, question.content)
+        break
+      case 'math-parabola-area':
+        turn = buildParabolaAreaTurn(roundIndex, question.content)
+        break
+      case 'english-clause-flowchart':
+        turn = buildEnglishClauseTurn(roundIndex, question.content)
+        break
+      case 'math-quadratic-flowchart':
+        turn = buildQuadraticFlowTurn(roundIndex, question.content)
+        break
+      default:
+        turn = buildCustomDemoTurn(roundIndex, question.content, firstUserText)
+        break
+    }
   }
 
   yield {

@@ -1,31 +1,56 @@
 import clsx from 'clsx'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { sendQuickMessage, useChatStore } from '../../services/chat/store.js'
+import {
+  setFlowDirectionOverride,
+  setSelectedFlowNodeId,
+  toggleFlowNodeStatusOverride,
+  useCanvasStore,
+} from '../../services/tutor/canvasStore.js'
+import type { FlowchartState, FlowNode } from '../../services/tutor/types.js'
 import { copyText } from '../../utils/clipboard.js'
 import { showToast } from '../base/toastState.js'
-import type { FlowchartState, FlowNode } from '../../services/tutor/types.js'
 import styles from './FlowchartCanvas.module.css'
 
 type PositionedNode = {
   node: FlowNode
+  layer: number
   x: number
   y: number
   width: number
   height: number
 }
 
-const NODE_WIDTH = 248
-const NODE_HEIGHT_COMPACT = 60
-const NODE_HEIGHT_SUB = 78
-const GAP_X = 44
-const GAP_Y = 58
+const NODE_WIDTH = 264
+const GAP_X = 48
+const GAP_Y = 64
 
-const wrapLines = (text: string, maxChars: number, maxLines: number): string[] => {
+const visualCharWidth = (ch: string): number => (ch.charCodeAt(0) > 255 ? 1.85 : 1)
+
+const estimateTextPx = (text: string, fontSize = 11): number => {
+  let units = 0
+  for (const ch of text) {
+    units += visualCharWidth(ch)
+  }
+  return Math.ceil(units * (fontSize * 0.62))
+}
+
+const wrapLines = (text: string, maxUnits: number, maxLines: number): string[] => {
   const lines: string[] = []
   let current = ''
   let widthCount = 0
   for (const ch of text) {
-    const chWidth = ch.charCodeAt(0) > 255 ? 1.8 : 1
-    if (widthCount + chWidth > maxChars && current) {
+    if (ch === '\n') {
+      lines.push(current)
+      current = ''
+      widthCount = 0
+      if (lines.length >= maxLines) {
+        return lines
+      }
+      continue
+    }
+    const chWidth = visualCharWidth(ch)
+    if (widthCount + chWidth > maxUnits && current) {
       lines.push(current)
       if (lines.length >= maxLines) {
         const last = lines[lines.length - 1]
@@ -45,31 +70,44 @@ const wrapLines = (text: string, maxChars: number, maxLines: number): string[] =
   return lines
 }
 
-/** 轻量级分层拓扑布局：按节点边关系自动排布层级并居中对齐，适合渐进式增长的流程图 */
-const computeFlowLayout = (flowchart: FlowchartState) => {
-  const { nodes, edges, direction } = flowchart
+const computeNodeHeight = (node: FlowNode): number => {
+  const titleLines = wrapLines(node.label, 25, 4)
+  const subLines = node.sublabel ? wrapLines(node.sublabel, 30, 4) : []
+  if (subLines.length === 0) {
+    return Math.max(58, 28 + titleLines.length * 18 + 12)
+  }
+  return Math.max(76, 26 + titleLines.length * 18 + 6 + subLines.length * 16 + 14)
+}
+
+/** 分层拓扑布局 + 重心法减交叉：自动对齐分支并动态计算卡片高度 */
+const computeFlowLayout = (flowchart: FlowchartState, direction: 'TD' | 'LR') => {
+  const { nodes, edges } = flowchart
   if (nodes.length === 0) {
     return { positioned: [] as PositionedNode[], bounds: { width: 400, height: 300 } }
   }
 
-  const incoming = new Map<string, number>()
-  const outgoing = new Map<string, string[]>()
+  const nodeIds = new Set(nodes.map((n) => n.id))
+  const incomingCount = new Map<string, number>()
+  const parentsMap = new Map<string, string[]>()
+  const outgoingMap = new Map<string, string[]>()
   for (const node of nodes) {
-    incoming.set(node.id, 0)
-    outgoing.set(node.id, [])
+    incomingCount.set(node.id, 0)
+    parentsMap.set(node.id, [])
+    outgoingMap.set(node.id, [])
   }
   for (const edge of edges) {
-    if (incoming.has(edge.to) && outgoing.has(edge.from)) {
-      incoming.set(edge.to, (incoming.get(edge.to) ?? 0) + 1)
-      outgoing.get(edge.from)?.push(edge.to)
+    if (nodeIds.has(edge.from) && nodeIds.has(edge.to) && edge.from !== edge.to) {
+      incomingCount.set(edge.to, (incomingCount.get(edge.to) ?? 0) + 1)
+      outgoingMap.get(edge.from)?.push(edge.to)
+      parentsMap.get(edge.to)?.push(edge.from)
     }
   }
 
-  // BFS 计算每个节点所在层级
+  // BFS 计算节点层级（带防环保护）
   const depth = new Map<string, number>()
   const queue: string[] = []
   for (const node of nodes) {
-    if ((incoming.get(node.id) ?? 0) === 0) {
+    if ((incomingCount.get(node.id) ?? 0) === 0) {
       depth.set(node.id, 0)
       queue.push(node.id)
     }
@@ -85,10 +123,10 @@ const computeFlowLayout = (flowchart: FlowchartState) => {
       continue
     }
     const currDepth = depth.get(curr) ?? 0
-    for (const next of outgoing.get(curr) ?? []) {
+    for (const next of outgoingMap.get(curr) ?? []) {
       const existing = depth.get(next)
       if (existing === undefined || existing < currDepth + 1) {
-        if (currDepth + 1 <= nodes.length) {
+        if (currDepth + 1 < nodes.length) {
           depth.set(next, currDepth + 1)
           queue.push(next)
         }
@@ -96,7 +134,6 @@ const computeFlowLayout = (flowchart: FlowchartState) => {
     }
   }
 
-  // 尚未连通的孤立节点顺延到底部
   let maxLayer = 0
   for (const d of depth.values()) {
     maxLayer = Math.max(maxLayer, d)
@@ -117,7 +154,32 @@ const computeFlowLayout = (flowchart: FlowchartState) => {
   }
 
   const sortedLayerKeys = Array.from(layers.keys()).sort((a, b) => a - b)
+
+  // 重心法排序：按上一层父节点平均位置排序，减少交叉连线
+  const orderIndex = new Map<string, number>()
+  for (const layerKey of sortedLayerKeys) {
+    const row = layers.get(layerKey) ?? []
+    if (layerKey > 0 && row.length > 1) {
+      row.sort((a, b) => {
+        const pa = (parentsMap.get(a.id) ?? [])
+          .map((pid) => orderIndex.get(pid))
+          .filter((idx): idx is number => idx !== undefined)
+        const pb = (parentsMap.get(b.id) ?? [])
+          .map((pid) => orderIndex.get(pid))
+          .filter((idx): idx is number => idx !== undefined)
+        const avgA = pa.length > 0 ? pa.reduce((s, v) => s + v, 0) / pa.length : Number.MAX_SAFE_INTEGER
+        const avgB = pb.length > 0 ? pb.reduce((s, v) => s + v, 0) / pb.length : Number.MAX_SAFE_INTEGER
+        if (avgA !== avgB) {
+          return avgA - avgB
+        }
+        return a.stepIndex - b.stepIndex
+      })
+    }
+    row.forEach((n, idx) => orderIndex.set(n.id, idx))
+  }
+
   const positioned: PositionedNode[] = []
+  const heightById = new Map<string, number>(nodes.map((n) => [n.id, computeNodeHeight(n)]))
 
   if (direction === 'TD') {
     let cursorY = 56
@@ -127,18 +189,17 @@ const computeFlowLayout = (flowchart: FlowchartState) => {
       const rowWidth = row.length * NODE_WIDTH + Math.max(0, row.length - 1) * GAP_X
       maxRowWidth = Math.max(maxRowWidth, rowWidth)
     }
-    const centerX = maxRowWidth / 2 + 48
+    const centerX = maxRowWidth / 2 + 56
     for (const layerKey of sortedLayerKeys) {
       const row = layers.get(layerKey) ?? []
       const rowWidth = row.length * NODE_WIDTH + Math.max(0, row.length - 1) * GAP_X
-      const rowHeight = Math.max(
-        ...row.map((n) => (n.sublabel ? NODE_HEIGHT_SUB : NODE_HEIGHT_COMPACT))
-      )
+      const rowHeight = Math.max(...row.map((n) => heightById.get(n.id) ?? 64))
       const startX = centerX - rowWidth / 2
       row.forEach((node, idx) => {
-        const h = node.sublabel ? NODE_HEIGHT_SUB : NODE_HEIGHT_COMPACT
+        const h = heightById.get(node.id) ?? 64
         positioned.push({
           node,
+          layer: layerKey,
           x: startX + idx * (NODE_WIDTH + GAP_X),
           y: cursorY + (rowHeight - h) / 2,
           width: NODE_WIDTH,
@@ -149,17 +210,17 @@ const computeFlowLayout = (flowchart: FlowchartState) => {
     }
     return {
       positioned,
-      bounds: { width: maxRowWidth + 96, height: Math.max(260, cursorY + 32) },
+      bounds: { width: maxRowWidth + 112, height: Math.max(260, cursorY + 36) },
     }
   }
 
   // LR 横向布局
-  let cursorX = 48
-  let maxColHeight = NODE_HEIGHT_SUB
+  let cursorX = 56
+  let maxColHeight = 84
   for (const layerKey of sortedLayerKeys) {
     const col = layers.get(layerKey) ?? []
     const colHeight =
-      col.reduce((acc, n) => acc + (n.sublabel ? NODE_HEIGHT_SUB : NODE_HEIGHT_COMPACT), 0) +
+      col.reduce((acc, n) => acc + (heightById.get(n.id) ?? 64), 0) +
       Math.max(0, col.length - 1) * 32
     maxColHeight = Math.max(maxColHeight, colHeight)
   }
@@ -167,24 +228,24 @@ const computeFlowLayout = (flowchart: FlowchartState) => {
   for (const layerKey of sortedLayerKeys) {
     const col = layers.get(layerKey) ?? []
     const colHeight =
-      col.reduce((acc, n) => acc + (n.sublabel ? NODE_HEIGHT_SUB : NODE_HEIGHT_COMPACT), 0) +
+      col.reduce((acc, n) => acc + (heightById.get(n.id) ?? 64), 0) +
       Math.max(0, col.length - 1) * 32
     let y = centerY - colHeight / 2
     for (const node of col) {
-      const h = node.sublabel ? NODE_HEIGHT_SUB : NODE_HEIGHT_COMPACT
-      positioned.push({ node, x: cursorX, y, width: NODE_WIDTH, height: h })
+      const h = heightById.get(node.id) ?? 64
+      positioned.push({ node, layer: layerKey, x: cursorX, y, width: NODE_WIDTH, height: h })
       y += h + 32
     }
-    cursorX += NODE_WIDTH + 68
+    cursorX += NODE_WIDTH + 72
   }
   return {
     positioned,
-    bounds: { width: Math.max(360, cursorX + 40), height: maxColHeight + 112 },
+    bounds: { width: Math.max(360, cursorX + 48), height: maxColHeight + 112 },
   }
 }
 
-const toMermaidCode = (flowchart: FlowchartState): string => {
-  const lines = [`flowchart ${flowchart.direction}`]
+const toMermaidCode = (flowchart: FlowchartState, direction: 'TD' | 'LR'): string => {
+  const lines = [`flowchart ${direction}`]
   const esc = (s: string) => s.replace(/"/g, "'")
   for (const node of flowchart.nodes) {
     const text = node.sublabel ? `${node.label}<br/>${node.sublabel}` : node.label
@@ -216,20 +277,46 @@ export const FlowchartCanvas = ({
   hasContent: boolean
   svgRef?: React.RefObject<SVGSVGElement>
 }) => {
+  const selectedFlowNodeId = useCanvasStore((state) => state.selectedFlowNodeId)
+  const flowDirectionOverride = useCanvasStore((state) => state.flowDirectionOverride)
+  const flowStatusOverrides = useCanvasStore((state) => state.flowStatusOverrides)
+  const activeSessionId = useChatStore((state) => state.activeId)
+  const streaming = useChatStore((state) =>
+    state.activeId ? Object.hasOwn(state.streaming, state.activeId) : false
+  )
+
   const stageRef = useRef<HTMLDivElement>(null)
   const [stageSize, setStageSize] = useState({ width: 520, height: 420 })
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [zoom, setZoom] = useState(1)
   const [dragging, setDragging] = useState(false)
-  const dragOrigin = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(
-    null
+  const [nodeOffsets, setNodeOffsets] = useState<Record<string, { dx: number; dy: number }>>({})
+
+  const activePointersRef = useRef<Map<number, { x: number; y: number }>>(new Map())
+  const pinchRef = useRef<{ dist: number; zoom: number; pan: { x: number; y: number }; cx: number; cy: number } | null>(null)
+  const dragRef = useRef<
+    | { kind: 'pan'; startX: number; startY: number; panX: number; panY: number }
+    | { kind: 'node'; nodeId: string; startX: number; startY: number; baseDx: number; baseDy: number; moved: boolean }
+    | null
+  >(null)
+
+  const effectiveDirection = flowDirectionOverride ?? flowchart.direction
+  const layout = useMemo(
+    () => computeFlowLayout(flowchart, effectiveDirection),
+    [flowchart, effectiveDirection]
   )
 
-  const layout = useMemo(() => computeFlowLayout(flowchart), [flowchart])
-  const nodeMap = useMemo(
-    () => new Map(layout.positioned.map((item) => [item.node.id, item])),
-    [layout.positioned]
-  )
+  const nodeMap = useMemo(() => {
+    const map = new Map<string, PositionedNode>()
+    for (const item of layout.positioned) {
+      const off = nodeOffsets[item.node.id]
+      map.set(
+        item.node.id,
+        off ? { ...item, x: item.x + off.dx, y: item.y + off.dy } : item
+      )
+    }
+    return map
+  }, [layout.positioned, nodeOffsets])
 
   useEffect(() => {
     const el = stageRef.current
@@ -248,22 +335,58 @@ export const FlowchartCanvas = ({
     return () => observer.disconnect()
   }, [])
 
-  // 每次新增节点或方向变更时自动居中适配画布，体验丝滑
-  const fitToView = () => {
-    const scaleX = (stageSize.width - 36) / Math.max(1, layout.bounds.width)
-    const scaleY = (stageSize.height - 64) / Math.max(1, layout.bounds.height)
-    const nextZoom = Math.max(0.55, Math.min(1.08, Math.min(scaleX, scaleY)))
+  const fitToView = useCallback(() => {
+    const scaleX = (stageSize.width - 44) / Math.max(1, layout.bounds.width)
+    const scaleY = (stageSize.height - 80) / Math.max(1, layout.bounds.height)
+    const nextZoom = Math.max(0.45, Math.min(1.08, Math.min(scaleX, scaleY)))
     setZoom(nextZoom)
     setPan({
       x: (stageSize.width - layout.bounds.width * nextZoom) / 2,
-      y: Math.max(20, (stageSize.height - layout.bounds.height * nextZoom) / 2),
+      y: Math.max(24, (stageSize.height - layout.bounds.height * nextZoom) / 2),
     })
-  }
+  }, [stageSize.width, stageSize.height, layout.bounds.width, layout.bounds.height])
 
+  // 仅当节点数量或排版方向变化时自动适配视图，保留用户手动缩放/拖拽状态
+  const prevFitKeyRef = useRef('')
   useEffect(() => {
-    fitToView()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [flowchart.nodes.length, flowchart.direction, stageSize.width, stageSize.height])
+    const key = `${flowchart.nodes.length}:${effectiveDirection}`
+    if (key !== prevFitKeyRef.current) {
+      prevFitKeyRef.current = key
+      fitToView()
+    }
+  }, [flowchart.nodes.length, effectiveDirection, fitToView])
+
+  const zoomAt = useCallback(
+    (factor: number, cx = stageSize.width / 2, cy = stageSize.height / 2) => {
+      setZoom((prevZoom) => {
+        const nextZoom = Math.max(0.35, Math.min(2.4, prevZoom * factor))
+        const ratio = nextZoom / prevZoom
+        setPan((prevPan) => ({
+          x: cx - (cx - prevPan.x) * ratio,
+          y: cy - (cy - prevPan.y) * ratio,
+        }))
+        return nextZoom
+      })
+    },
+    [stageSize.width, stageSize.height]
+  )
+
+  // 计算选中节点及其邻接关系，用于聚焦高亮
+  const connectedIds = useMemo(() => {
+    if (!selectedFlowNodeId) {
+      return null
+    }
+    const set = new Set<string>([selectedFlowNodeId])
+    for (const edge of flowchart.edges) {
+      if (edge.from === selectedFlowNodeId) {
+        set.add(edge.to)
+      }
+      if (edge.to === selectedFlowNodeId) {
+        set.add(edge.from)
+      }
+    }
+    return set
+  }, [selectedFlowNodeId, flowchart.edges])
 
   if (!hasContent) {
     return (
@@ -280,21 +403,58 @@ export const FlowchartCanvas = ({
   }
 
   const highlighted = new Set(flowchart.highlightedIds)
+  const selectedNode = selectedFlowNodeId
+    ? flowchart.nodes.find((n) => n.id === selectedFlowNodeId) ?? null
+    : null
+  const selectedStatus = selectedNode
+    ? (flowStatusOverrides[selectedNode.id] ?? selectedNode.status)
+    : null
+  const hasCustomOffsets = Object.keys(nodeOffsets).length > 0
+
+  // 统计同一父节点发出的边数，错开标签位置防止重叠
+  const outgoingEdgesCount = new Map<string, number>()
+  const outgoingEdgeIndex = new Map<string, number>()
+  for (const edge of flowchart.edges) {
+    const count = outgoingEdgesCount.get(edge.from) ?? 0
+    outgoingEdgeIndex.set(edge.id, count)
+    outgoingEdgesCount.set(edge.from, count + 1)
+  }
 
   return (
     <div className={styles.container}>
       <div
         ref={stageRef}
         className={clsx(styles.stage, dragging && styles.stageDragging)}
+        onDoubleClick={fitToView}
         onWheel={(event) => {
           event.preventDefault()
-          const factor = event.deltaY > 0 ? 0.92 : 1.09
-          setZoom((prev) => Math.max(0.4, Math.min(2.2, prev * factor)))
+          const rect = event.currentTarget.getBoundingClientRect()
+          const factor = event.deltaY > 0 ? 0.91 : 1.1
+          zoomAt(factor, event.clientX - rect.left, event.clientY - rect.top)
         }}
         onPointerDown={(event) => {
+          activePointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
+          if (activePointersRef.current.size === 2) {
+            const pts = Array.from(activePointersRef.current.values())
+            const rect = event.currentTarget.getBoundingClientRect()
+            pinchRef.current = {
+              dist: Math.max(10, Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y)),
+              zoom,
+              pan,
+              cx: (pts[0].x + pts[1].x) / 2 - rect.left,
+              cy: (pts[0].y + pts[1].y) / 2 - rect.top,
+            }
+            dragRef.current = null
+            setDragging(false)
+            return
+          }
+          if (dragRef.current?.kind === 'node') {
+            return
+          }
           event.currentTarget.setPointerCapture(event.pointerId)
           setDragging(true)
-          dragOrigin.current = {
+          dragRef.current = {
+            kind: 'pan',
             startX: event.clientX,
             startY: event.clientY,
             panX: pan.x,
@@ -302,17 +462,74 @@ export const FlowchartCanvas = ({
           }
         }}
         onPointerMove={(event) => {
-          const origin = dragOrigin.current
-          if (!origin) {
+          if (activePointersRef.current.has(event.pointerId)) {
+            activePointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
+          }
+          if (activePointersRef.current.size === 2 && pinchRef.current) {
+            const pts = Array.from(activePointersRef.current.values())
+            const dist = Math.max(10, Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y))
+            const nextZoom = Math.max(
+              0.35,
+              Math.min(2.4, pinchRef.current.zoom * (dist / pinchRef.current.dist))
+            )
+            const ratio = nextZoom / pinchRef.current.zoom
+            setZoom(nextZoom)
+            setPan({
+              x: pinchRef.current.cx - (pinchRef.current.cx - pinchRef.current.pan.x) * ratio,
+              y: pinchRef.current.cy - (pinchRef.current.cy - pinchRef.current.pan.y) * ratio,
+            })
             return
           }
-          setPan({
-            x: origin.panX + (event.clientX - origin.startX),
-            y: origin.panY + (event.clientY - origin.startY),
-          })
+
+          const drag = dragRef.current
+          if (!drag) {
+            return
+          }
+          if (drag.kind === 'pan') {
+            setPan({
+              x: drag.panX + (event.clientX - drag.startX),
+              y: drag.panY + (event.clientY - drag.startY),
+            })
+          } else {
+            const dxScreen = event.clientX - drag.startX
+            const dyScreen = event.clientY - drag.startY
+            if (Math.hypot(dxScreen, dyScreen) > 4) {
+              drag.moved = true
+            }
+            if (drag.moved) {
+              setNodeOffsets((prev) => ({
+                ...prev,
+                [drag.nodeId]: {
+                  dx: drag.baseDx + dxScreen / zoom,
+                  dy: drag.baseDy + dyScreen / zoom,
+                },
+              }))
+            }
+          }
         }}
-        onPointerUp={() => {
-          dragOrigin.current = null
+        onPointerUp={(event) => {
+          activePointersRef.current.delete(event.pointerId)
+          if (activePointersRef.current.size < 2) {
+            pinchRef.current = null
+          }
+          const drag = dragRef.current
+          dragRef.current = null
+          setDragging(false)
+          if (drag?.kind === 'node') {
+            if (!drag.moved) {
+              setSelectedFlowNodeId(selectedFlowNodeId === drag.nodeId ? null : drag.nodeId)
+            }
+          } else if (
+            drag?.kind === 'pan' &&
+            Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 4
+          ) {
+            setSelectedFlowNodeId(null)
+          }
+        }}
+        onPointerCancel={(event) => {
+          activePointersRef.current.delete(event.pointerId)
+          pinchRef.current = null
+          dragRef.current = null
           setDragging(false)
         }}
       >
@@ -340,36 +557,112 @@ export const FlowchartCanvas = ({
             >
               <path d="M 0 1.2 L 9 5 L 0 8.8 z" fill="var(--dsw-static-amber-500)" />
             </marker>
+            <marker
+              id="flow-arrow-brand"
+              viewBox="0 0 10 10"
+              refX="8.5"
+              refY="5"
+              markerWidth="6.5"
+              markerHeight="6.5"
+              orient="auto-start-reverse"
+            >
+              <path d="M 0 1.2 L 9 5 L 0 8.8 z" fill="var(--dsw-alias-brand-primary)" />
+            </marker>
           </defs>
 
           <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
-            {/* 边连接线 */}
+            {/* 边连接线（支持跨层绕行、回边绕行、聚焦高亮与错峰标签） */}
             {flowchart.edges.map((edge) => {
               const from = nodeMap.get(edge.from)
               const to = nodeMap.get(edge.to)
               if (!from || !to) {
                 return null
               }
-              const isTD = flowchart.direction === 'TD'
-              const x1 = isTD ? from.x + from.width / 2 : from.x + from.width
-              const y1 = isTD ? from.y + from.height : from.y + from.height / 2
-              const x2 = isTD ? to.x + to.width / 2 : to.x
-              const y2 = isTD ? to.y : to.y + to.height / 2
-              const d = isTD
-                ? `M ${x1} ${y1} C ${x1} ${(y1 + y2) / 2}, ${x2} ${(y1 + y2) / 2}, ${x2} ${y2 - 3}`
-                : `M ${x1} ${y1} C ${(x1 + x2) / 2} ${y1}, ${(x1 + x2) / 2} ${y2}, ${x2 - 3} ${y2}`
-              const mx = (x1 + x2) / 2
-              const my = (y1 + y2) / 2
-              const labelWidth = edge.label ? Math.min(180, edge.label.length * 10 + 18) : 0
+              const isTD = effectiveDirection === 'TD'
+              const isBackEdge = to.layer <= from.layer
+              const isSkipLayer = to.layer - from.layer > 1
+
+              let d: string
+              let lx: number
+              let ly: number
+
+              if (isTD) {
+                const x1 = from.x + from.width / 2
+                const y1 = from.y + from.height
+                const x2 = to.x + to.width / 2
+                const y2 = to.y
+                if (isBackEdge) {
+                  const sideX = Math.max(from.x + from.width, to.x + to.width) + 52
+                  const sy1 = from.y + from.height / 2
+                  const sy2 = to.y + to.height / 2
+                  d = `M ${from.x + from.width} ${sy1} C ${sideX} ${sy1}, ${sideX} ${sy2}, ${to.x + to.width + 4} ${sy2}`
+                  lx = sideX - 8
+                  ly = (sy1 + sy2) / 2
+                } else if (isSkipLayer) {
+                  const curveX = Math.max(x1, x2) + 84
+                  d = `M ${x1} ${y1} C ${curveX} ${y1 + 40}, ${curveX} ${y2 - 40}, ${x2} ${y2 - 3}`
+                  lx = (x1 + x2) / 2 + 52
+                  ly = (y1 + y2) / 2
+                } else {
+                  d = `M ${x1} ${y1} C ${x1} ${(y1 + y2) / 2}, ${x2} ${(y1 + y2) / 2}, ${x2} ${y2 - 3}`
+                  const totalOut = outgoingEdgesCount.get(edge.from) ?? 1
+                  const idxOut = outgoingEdgeIndex.get(edge.id) ?? 0
+                  const t = totalOut > 1 ? 0.56 + (idxOut % 2 === 0 ? -0.08 : 0.08) : 0.5
+                  lx = x1 + (x2 - x1) * t
+                  ly = y1 + (y2 - y1) * t
+                }
+              } else {
+                const x1 = from.x + from.width
+                const y1 = from.y + from.height / 2
+                const x2 = to.x
+                const y2 = to.y + to.height / 2
+                if (isBackEdge) {
+                  const sideY = Math.max(from.y + from.height, to.y + to.height) + 46
+                  const sx1 = from.x + from.width / 2
+                  const sx2 = to.x + to.width / 2
+                  d = `M ${sx1} ${from.y + from.height} C ${sx1} ${sideY}, ${sx2} ${sideY}, ${sx2} ${to.y + to.height + 4}`
+                  lx = (sx1 + sx2) / 2
+                  ly = sideY - 8
+                } else if (isSkipLayer) {
+                  const curveY = Math.min(y1, y2) - 68
+                  d = `M ${x1} ${y1} C ${x1 + 40} ${curveY}, ${x2 - 40} ${curveY}, ${x2 - 3} ${y2}`
+                  lx = (x1 + x2) / 2
+                  ly = (y1 + y2) / 2 - 42
+                } else {
+                  d = `M ${x1} ${y1} C ${(x1 + x2) / 2} ${y1}, ${(x1 + x2) / 2} ${y2}, ${x2 - 3} ${y2}`
+                  const totalOut = outgoingEdgesCount.get(edge.from) ?? 1
+                  const idxOut = outgoingEdgeIndex.get(edge.id) ?? 0
+                  const t = totalOut > 1 ? 0.56 + (idxOut % 2 === 0 ? -0.08 : 0.08) : 0.5
+                  lx = x1 + (x2 - x1) * t
+                  ly = y1 + (y2 - y1) * t
+                }
+              }
+
+              const isEdgeFocused =
+                selectedFlowNodeId !== null &&
+                (edge.from === selectedFlowNodeId || edge.to === selectedFlowNodeId)
+              const isEdgeDimmed = selectedFlowNodeId !== null && !isEdgeFocused
+              const labelWidth = edge.label ? Math.max(44, estimateTextPx(edge.label, 11) + 18) : 0
+
               return (
-                <g key={edge.id}>
+                <g key={edge.id} className={clsx(isEdgeDimmed && styles.dimmed)}>
                   <path
                     d={d}
-                    className={clsx(styles.edgePath, edge.dashed && styles.edgeDashed)}
-                    markerEnd={edge.dashed ? 'url(#flow-arrow-amber)' : 'url(#flow-arrow)'}
+                    className={clsx(
+                      styles.edgePath,
+                      edge.dashed && styles.edgeDashed,
+                      isEdgeFocused && styles.edgeFocused
+                    )}
+                    markerEnd={
+                      isEdgeFocused
+                        ? 'url(#flow-arrow-brand)'
+                        : edge.dashed
+                          ? 'url(#flow-arrow-amber)'
+                          : 'url(#flow-arrow)'
+                    }
                   />
                   {edge.label ? (
-                    <g transform={`translate(${mx}, ${my})`}>
+                    <g transform={`translate(${lx}, ${ly})`}>
                       <rect
                         x={-labelWidth / 2}
                         y={-11}
@@ -388,11 +681,22 @@ export const FlowchartCanvas = ({
             })}
 
             {/* 节点卡片 */}
-            {layout.positioned.map(({ node, x, y, width, height }) => {
-              const titleLines = wrapLines(node.label, 25, 2)
-              const subLines = node.sublabel ? wrapLines(node.sublabel, 30, 2) : []
-              const rx = node.kind === 'start' || node.kind === 'result' ? height / 2 : 14
-              const isSolved = node.status === 'solved'
+            {layout.positioned.map(({ node }) => {
+              const pos = nodeMap.get(node.id)
+              if (!pos) {
+                return null
+              }
+              const { x, y, width, height } = pos
+              const effectiveStatus = flowStatusOverrides[node.id] ?? node.status
+              const titleLines = wrapLines(node.label, 25, 4)
+              const subLines = node.sublabel ? wrapLines(node.sublabel, 30, 4) : []
+              const rx = node.kind === 'start' || node.kind === 'result' ? Math.min(28, height / 2) : 14
+              const isSolved = effectiveStatus === 'solved'
+              const isSelected = selectedFlowNodeId === node.id
+              const isDimmed = connectedIds !== null && !connectedIds.has(node.id)
+              const stepText = `步骤 ${node.stepIndex}`
+              const badgeWidth = Math.max(48, estimateTextPx(stepText, 10) + 16)
+
               const cardClass = clsx(
                 styles.nodeCard,
                 node.kind === 'start' && styles.nodeStart,
@@ -401,22 +705,67 @@ export const FlowchartCanvas = ({
                 node.kind === 'grammar' && styles.nodeGrammar,
                 node.kind === 'result' && styles.nodeResult,
                 isSolved && node.kind !== 'result' && styles.nodeSolved,
-                highlighted.has(node.id) && styles.nodeHighlighted
+                (highlighted.has(node.id) || isSelected) && styles.nodeHighlighted,
+                isSelected && styles.nodeSelected
               )
+
+              const titleStartY =
+                subLines.length > 0
+                  ? 26
+                  : height / 2 - ((titleLines.length - 1) * 18) / 2 + 4
+
               return (
-                <g key={node.id} transform={`translate(${x}, ${y})`} className={styles.nodeGroup}>
+                <g
+                  key={node.id}
+                  transform={`translate(${x}, ${y})`}
+                  className={clsx(styles.nodeGroup, isDimmed && styles.dimmed)}
+                  onPointerDown={(event) => {
+                    if (event.button !== 0) {
+                      return
+                    }
+                    event.stopPropagation()
+                    containerRefOrStageCapture(stageRef.current, event.pointerId)
+                    const currentOff = nodeOffsets[node.id] ?? { dx: 0, dy: 0 }
+                    dragRef.current = {
+                      kind: 'node',
+                      nodeId: node.id,
+                      startX: event.clientX,
+                      startY: event.clientY,
+                      baseDx: currentOff.dx,
+                      baseDy: currentOff.dy,
+                      moved: false,
+                    }
+                  }}
+                >
                   <rect width={width} height={height} rx={rx} className={cardClass} />
+                  {/* 决策节点左侧菱形标识 */}
+                  {node.kind === 'decision' ? (
+                    <text
+                      x={12}
+                      y={20}
+                      fill="var(--dsw-static-amber-500)"
+                      fontSize={12}
+                      fontWeight={700}
+                    >
+                      ◇
+                    </text>
+                  ) : null}
                   {/* 左上角步骤徽章 */}
                   <rect
-                    x={12}
+                    x={14}
                     y={-9}
-                    width={48}
+                    width={badgeWidth}
                     height={18}
                     rx={9}
                     className={styles.stepBadgeBg}
                   />
-                  <text x={36} y={3} textAnchor="middle" className={styles.stepBadgeText}>
-                    步骤 {node.stepIndex}
+                  <text
+                    x={14 + badgeWidth / 2}
+                    y={3}
+                    textAnchor="middle"
+                    className={styles.stepBadgeText}
+                  >
+                    {stepText}
                   </text>
                   {isSolved ? (
                     <text
@@ -445,10 +794,7 @@ export const FlowchartCanvas = ({
                     <text
                       key={idx}
                       x={width / 2}
-                      y={
-                        (subLines.length > 0 ? 26 : height / 2 - (titleLines.length - 1) * 7 + 4) +
-                        idx * 17
-                      }
+                      y={titleStartY + idx * 18}
                       textAnchor="middle"
                       className={styles.nodeTitle}
                     >
@@ -459,7 +805,7 @@ export const FlowchartCanvas = ({
                     <text
                       key={idx}
                       x={width / 2}
-                      y={26 + titleLines.length * 17 + 4 + idx * 15}
+                      y={titleStartY + titleLines.length * 18 + 3 + idx * 16}
                       textAnchor="middle"
                       className={styles.nodeSubtitle}
                     >
@@ -477,14 +823,45 @@ export const FlowchartCanvas = ({
         </div>
 
         <div className={styles.hudTopRight}>
-          <button type="button" className={styles.toolBtn} onClick={fitToView}>
-            适应画面
+          <button
+            type="button"
+            className={styles.toolBtn}
+            title="切换竖排 / 横排布局"
+            onClick={() =>
+              setFlowDirectionOverride(effectiveDirection === 'TD' ? 'LR' : 'TD')
+            }
+          >
+            {effectiveDirection === 'TD' ? '⇅ 竖排' : '⇄ 横排'}
+          </button>
+          <button type="button" className={styles.zoomIconBtn} title="放大" onClick={() => zoomAt(1.18)}>
+            +
+          </button>
+          <button
+            type="button"
+            className={styles.zoomIconBtn}
+            title="缩小"
+            onClick={() => zoomAt(1 / 1.18)}
+          >
+            −
+          </button>
+          <button
+            type="button"
+            className={styles.toolBtn}
+            title="自适应居中显示全部节点"
+            onClick={() => {
+              if (hasCustomOffsets) {
+                setNodeOffsets({})
+              }
+              fitToView()
+            }}
+          >
+            {hasCustomOffsets ? '重排并适应' : '适应画面'}
           </button>
           <button
             type="button"
             className={styles.toolBtn}
             onClick={async () => {
-              const ok = await copyText(toMermaidCode(flowchart))
+              const ok = await copyText(toMermaidCode(flowchart, effectiveDirection))
               showToast(ok ? { key: 'copied' } : { key: 'copyFailed', type: 'error' })
             }}
           >
@@ -492,6 +869,74 @@ export const FlowchartCanvas = ({
           </button>
         </div>
       </div>
+
+      {/* 点击节点后展示完整内容与向 AI 追问 / 标记状态操作栏 */}
+      {selectedNode ? (
+        <div className={styles.inspector}>
+          <div className={styles.inspectorBody}>
+            <div className={styles.inspectorHeader}>
+              <span className={styles.inspectorBadge}>步骤 {selectedNode.stepIndex}</span>
+              <span className={styles.inspectorTitle}>{selectedNode.label}</span>
+            </div>
+            {selectedNode.sublabel ? (
+              <div className={styles.inspectorSub}>{selectedNode.sublabel}</div>
+            ) : null}
+          </div>
+          <div className={styles.inspectorActions}>
+            {activeSessionId ? (
+              <button
+                type="button"
+                className={styles.inspectorAskBtn}
+                disabled={streaming}
+                onClick={() => {
+                  const prompt =
+                    selectedNode.kind === 'question' && selectedStatus !== 'solved'
+                      ? `针对流程图里的待推导节点「${selectedNode.label}」，请再给我一点引导提示或一起推进这一步。`
+                      : `请详细展开讲讲流程图中的「${selectedNode.label}」这一步。`
+                  sendQuickMessage(activeSessionId, prompt)
+                }}
+              >
+                {selectedNode.kind === 'question' && selectedStatus !== 'solved'
+                  ? '请 AI 引导此步'
+                  : '追问此节点'}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className={styles.inspectorBtn}
+              onClick={() =>
+                toggleFlowNodeStatusOverride(
+                  selectedNode.id,
+                  selectedStatus ?? selectedNode.status
+                )
+              }
+            >
+              {selectedStatus === 'solved' ? '标为待思考' : '标记已掌握 ✓'}
+            </button>
+            <button
+              type="button"
+              className={styles.inspectorBtn}
+              onClick={async () => {
+                const text = selectedNode.sublabel
+                  ? `${selectedNode.label}\n${selectedNode.sublabel}`
+                  : selectedNode.label
+                const ok = await copyText(text)
+                showToast(ok ? { key: 'copied' } : { key: 'copyFailed', type: 'error' })
+              }}
+            >
+              复制
+            </button>
+            <button
+              type="button"
+              className={styles.inspectorCloseBtn}
+              title="关闭节点详情"
+              onClick={() => setSelectedFlowNodeId(null)}
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       <div className={styles.legendBar}>
         <div className={styles.legendItems}>
@@ -514,11 +959,19 @@ export const FlowchartCanvas = ({
               className={styles.legendDot}
               style={{ backgroundColor: 'var(--dsw-alias-brand-primary)' }}
             />
-            核心步骤 / 语法结构
+            点击节点可看全文/追问 · 支持拖拽调位
           </span>
         </div>
         <span>共 {flowchart.nodes.length} 个节点</span>
       </div>
     </div>
   )
+}
+
+function containerRefOrStageCapture(el: HTMLDivElement | null, pointerId: number) {
+  try {
+    el?.setPointerCapture(pointerId)
+  } catch {
+    // 忽略不支持 pointer capture 的合成事件
+  }
 }

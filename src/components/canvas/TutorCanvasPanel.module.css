@@ -160,11 +160,43 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
+.stepNavGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.stepNavBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background-color: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.stepNavBtn:hover:not(:disabled) {
+  border-color: var(--dsw-alias-brand-primary);
+  color: var(--dsw-alias-brand-text);
+}
+
+.stepNavBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .stepPill {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   height: 24px;
   padding: 0 9px;
   border-radius: 999px;
@@ -178,6 +210,21 @@
     border-color 0.15s ease,
     background-color 0.15s ease,
     color 0.15s ease;
+}
+
+.stepModeDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.stepModeCoord {
+  background-color: var(--dsw-alias-brand-primary);
+}
+
+.stepModeFlow {
+  background-color: var(--dsw-static-green-500);
 }
 
 .stepPill:hover {

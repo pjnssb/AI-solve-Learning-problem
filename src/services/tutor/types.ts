@@ -145,6 +145,8 @@ export type CoordMeasurement = {
 export type CoordinateState = {
   title: string
   viewport: CoordViewport
+  /** 是否由 coord_setup 显式指定过视口；未指定时在标点/画图后自动扩展视口以防越界不可见 */
+  hasExplicitViewport?: boolean
   showGrid: boolean
   points: CoordPoint[]
   movingPoints: CoordMovingPoint[]
@@ -158,6 +160,24 @@ export type CoordinateState = {
   /** 工具建议将某个动点平滑移动到指定 t 值 */
   targetT: Record<string, number>
   highlightedIds: string[]
+}
+
+export type UserCoordPoint = {
+  id: string
+  label: string
+  x: number
+  y: number
+}
+
+export type UserCoordSegment = {
+  id: string
+  fromId: string
+  toId: string
+}
+
+export type UserCoordFunction = {
+  id: string
+  expr: string
 }
 
 export type FlowNodeKind = 'start' | 'process' | 'decision' | 'question' | 'result' | 'grammar'

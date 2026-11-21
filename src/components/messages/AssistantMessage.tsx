@@ -52,7 +52,10 @@ export const AssistantMessage = memo(function AssistantMessage({
   // 安全拒绝：已下发的思考与正文按协议丢弃，只显示模板答复。
   const refused = message.stopReason === 'refusal'
   const answer = refused ? null : view.answer
-  const parsedTutor = useMemo(() => (answer ? parseTutorReply(answer.markdown) : null), [answer])
+  const parsedTutor = useMemo(
+    () => (answer ? parseTutorReply(answer.markdown, streaming) : null),
+    [answer, streaming]
+  )
   const cleanText = parsedTutor ? parsedTutor.cleanMarkdown : answer?.text
   const responseText = [cleanText, notice?.presentation === 'response' ? notice.text : null]
     .filter(Boolean)

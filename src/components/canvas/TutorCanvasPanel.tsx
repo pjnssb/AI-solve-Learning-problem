@@ -30,6 +30,90 @@ const useIsNarrowSplit = () => {
   return narrow
 }
 
+/** 将当前主题的 CSS 变量与画板类样式内联进导出的 SVG，确保离线打开依然清晰美观 */
+const serializeStyledSvg = (svg: SVGSVGElement): string => {
+  const clone = svg.cloneNode(true) as SVGSVGElement
+  const computed = getComputedStyle(document.body)
+  const bgBase = computed.getPropertyValue('--dsw-alias-bg-base').trim() || '#ffffff'
+  const textPrimary = computed.getPropertyValue('--dsw-alias-label-primary').trim() || '#0f172a'
+  const textSecondary = computed.getPropertyValue('--dsw-alias-label-secondary').trim() || '#475569'
+  const textTertiary = computed.getPropertyValue('--dsw-alias-label-tertiary').trim() || '#94a3b8'
+  const borderL2 = computed.getPropertyValue('--dsw-alias-border-l2').trim() || '#e2e8f0'
+  const brandPrimary = computed.getPropertyValue('--dsw-alias-brand-primary').trim() || '#3964fe'
+  const amber = computed.getPropertyValue('--dsw-static-amber-500').trim() || '#f59e0b'
+  const green = computed.getPropertyValue('--dsw-static-green-500').trim() || '#22c55e'
+  const layer2 = computed.getPropertyValue('--dsw-alias-bg-layer-2').trim() || '#ffffff'
+
+  const styleEl = document.createElementNS('http://www.w3.org/2000/svg', 'style')
+  styleEl.textContent = `
+    svg {
+      background: ${bgBase};
+      --dsw-alias-bg-base: ${bgBase};
+      --dsw-alias-bg-layer-2: ${layer2};
+      --dsw-alias-label-primary: ${textPrimary};
+      --dsw-alias-label-secondary: ${textSecondary};
+      --dsw-alias-label-tertiary: ${textTertiary};
+      --dsw-alias-border-l2: ${borderL2};
+      --dsw-alias-border-l3: ${borderL2};
+      --dsw-alias-brand-primary: ${brandPrimary};
+      --dsw-static-amber-500: ${amber};
+      --dsw-static-amber-400: ${amber};
+      --dsw-static-green-500: ${green};
+      --dsw-font-family: system-ui, -apple-system, sans-serif;
+    }
+  `
+  clone.insertBefore(styleEl, clone.firstChild)
+
+  // 将 CSS Module 类名涉及的关键 computed style 内联固化，避免脱离页面样式表后失效
+  const srcNodes = svg.querySelectorAll('*')
+  const dstNodes = clone.querySelectorAll('*')
+  srcNodes.forEach((src, i) => {
+    const dst = dstNodes[i]
+    if (!dst) {
+      return
+    }
+    const cs = getComputedStyle(src)
+    const tag = src.tagName.toLowerCase()
+    if (tag === 'line' || tag === 'path' || tag === 'circle' || tag === 'polygon' || tag === 'polyline' || tag === 'rect') {
+      if (cs.fill && cs.fill !== 'none') {
+        dst.setAttribute('fill', cs.fill)
+      }
+      if (cs.stroke && cs.stroke !== 'none') {
+        dst.setAttribute('stroke', cs.stroke)
+      }
+      if (cs.strokeWidth) {
+        dst.setAttribute('stroke-width', cs.strokeWidth)
+      }
+      if (cs.strokeDasharray && cs.strokeDasharray !== 'none') {
+        dst.setAttribute('stroke-dasharray', cs.strokeDasharray)
+      }
+      if (cs.opacity && cs.opacity !== '1') {
+        dst.setAttribute('opacity', cs.opacity)
+      }
+    } else if (tag === 'text') {
+      if (cs.fill) {
+        dst.setAttribute('fill', cs.fill)
+      }
+      if (cs.fontSize) {
+        dst.setAttribute('font-size', cs.fontSize)
+      }
+      if (cs.fontWeight) {
+        dst.setAttribute('font-weight', cs.fontWeight)
+      }
+      if (cs.fontFamily) {
+        dst.setAttribute('font-family', cs.fontFamily)
+      }
+      if (cs.stroke && cs.stroke !== 'none') {
+        dst.setAttribute('stroke', cs.stroke)
+        dst.setAttribute('stroke-width', cs.strokeWidth)
+        dst.setAttribute('paint-order', cs.paintOrder || 'stroke')
+      }
+    }
+  })
+
+  return new XMLSerializer().serializeToString(clone)
+}
+
 /**
  * 交互式教学画板：
  * - 桌面端：右侧分屏，支持左右拖拽调宽；
@@ -55,13 +139,14 @@ export const TutorCanvasPanel = () => {
 
   const latestStepNumber = steps.at(-1)?.stepNumber ?? null
   const activeStepNumber = selectedStep ?? latestStepNumber
+  const activeStepIndex = steps.findIndex((s) => s.stepNumber === activeStepNumber)
 
   const exportSvg = () => {
     const svg = svgRef.current
     if (!svg) {
       return
     }
-    const serialized = new XMLSerializer().serializeToString(svg)
+    const serialized = serializeStyledSvg(svg)
     const blob = new Blob([serialized], { type: 'image/svg+xml;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
@@ -171,10 +256,44 @@ export const TutorCanvasPanel = () => {
         </div>
       </div>
 
-      {/* 步骤时间轴回放条：直观回看 AI 每一步的作图增量 */}
+      {/* 步骤时间轴回放条：支持上一步 / 下一步与任意历史步点击回放 */}
       {steps.length > 0 ? (
         <div className={styles.stepBar}>
           <span className={styles.stepLabel}>分步</span>
+          {steps.length > 1 ? (
+            <div className={styles.stepNavGroup}>
+              <button
+                type="button"
+                className={styles.stepNavBtn}
+                title="上一步"
+                disabled={activeStepIndex <= 0}
+                onClick={() => {
+                  const prevStep = steps[activeStepIndex - 1]
+                  if (prevStep) {
+                    selectCanvasStep(prevStep.stepNumber)
+                  }
+                }}
+              >
+                ‹
+              </button>
+              <button
+                type="button"
+                className={styles.stepNavBtn}
+                title="下一步"
+                disabled={activeStepIndex === -1 || activeStepIndex >= steps.length - 1}
+                onClick={() => {
+                  const nextStep = steps[activeStepIndex + 1]
+                  if (nextStep) {
+                    selectCanvasStep(
+                      nextStep.stepNumber === latestStepNumber ? null : nextStep.stepNumber
+                    )
+                  }
+                }}
+              >
+                ›
+              </button>
+            </div>
+          ) : null}
           {steps.map((step) => {
             const isCurrent = activeStepNumber === step.stepNumber
             const isLatest = step.stepNumber === latestStepNumber
@@ -186,6 +305,12 @@ export const TutorCanvasPanel = () => {
                 className={clsx(styles.stepPill, isCurrent && styles.stepPillActive)}
                 onClick={() => selectCanvasStep(isLatest ? null : step.stepNumber)}
               >
+                <span
+                  className={clsx(
+                    styles.stepModeDot,
+                    step.mode === 'flowchart' ? styles.stepModeFlow : styles.stepModeCoord
+                  )}
+                />
                 第 {step.stepNumber} 步{isLatest ? ' · 当前' : ''}
               </button>
             )

@@ -38,6 +38,7 @@ import {
   type SessionSummary,
   type UserMessage,
 } from './types.js'
+import { buildCanvasContextSummary } from '../tutor/canvasContext.js'
 import { streamDemoTutorReply } from '../tutor/demoEngine.js'
 import { streamMultiProviderMessage } from '../tutor/multiProtocolClient.js'
 import { buildSocraticSystemPrompt } from '../tutor/prompts.js'
@@ -1021,9 +1022,13 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
       try {
         const { provider, model } = getActiveProviderAndModel()
         const settingsState = useSettings.getState()
-        const systemPrompt = settingsState.tutorMode
+        const canvasContext = settingsState.tutorMode ? buildCanvasContextSummary() : ''
+        const baseSystemPrompt = settingsState.tutorMode
           ? buildSocraticSystemPrompt(settingsState.locale)
           : SYSTEM_PROMPT
+        const systemPrompt = canvasContext
+          ? `${baseSystemPrompt}\n\n${canvasContext}`
+          : baseSystemPrompt
 
         const prepared =
           provider.protocol === 'deepseek-native'
