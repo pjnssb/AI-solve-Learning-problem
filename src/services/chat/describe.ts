@@ -32,8 +32,14 @@ export const describeReply = (reply: AssistantMessage): Notice | null => {
       return { text: translate('commonNetworkErrorToast') }
     }
     switch (classifyStatus(status)) {
-      case 'unauthorized':
-        return { text: translate('replyInvalidApiKey'), action: 'apiKey' }
+      case 'unauthorized': {
+        const baseMsg = translate('replyInvalidApiKey')
+        const detail = reply.error.message.trim()
+        return {
+          text: detail ? `${baseMsg}（${detail}）` : baseMsg,
+          action: 'apiKey',
+        }
+      }
       case 'insufficientBalance':
         return { text: translate('replyInsufficientBalance'), action: 'topUp' }
       case 'rateLimited':

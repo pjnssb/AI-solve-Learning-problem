@@ -1,5 +1,6 @@
 import clsx from 'clsx'
 import { useMemo, useState } from 'react'
+import { testProviderConnection } from '../../services/tutor/multiProtocolClient.js'
 import {
   addCustomProvider,
   addModelToProvider,
@@ -19,7 +20,7 @@ import styles from './ProvidersPanel.module.css'
 /**
  * 设置页「多服务商与模型配置」面板：
  * 支持 DeepSeek / OpenAI / Anthropic Claude / Google Gemini / OpenRouter / 通义千问 / Ollama 以及任意自定义兼容端点；
- * 添加自定义网关时即可直接一键拉取 /models 列表并勾选/搜索模型。
+ * 支持一键拉取 /models 列表与「测试对话」真实链路校验。
  */
 export const ProvidersPanel = () => {
   const providers = useProviderStore((state) => state.providers)
@@ -30,6 +31,7 @@ export const ProvidersPanel = () => {
   const [newModelId, setNewModelId] = useState('')
   const [modelFilter, setModelFilter] = useState('')
   const [fetching, setFetching] = useState(false)
+  const [testing, setTesting] = useState(false)
   const [statusMsg, setStatusMsg] = useState<{ text: string; error?: boolean } | null>(null)
   const [addingCustom, setAddingCustom] = useState(false)
   const [customForm, setCustomForm] = useState({
@@ -43,6 +45,10 @@ export const ProvidersPanel = () => {
   const [customModelFilter, setCustomModelFilter] = useState('')
 
   const current = providers.find((p) => p.id === selectedId) ?? providers[0]
+  const activeProvider = providers.find((p) => p.id === activeProviderId) ?? providers[0]
+  const isCurrentActive = current.id === activeProviderId
+  const currentTargetModel =
+    (isCurrentActive && current.models.find((m) => m.id === activeModelId)) || current.models[0]
 
   const onFetchCurrentModels = async () => {
     setFetching(true)
@@ -62,6 +68,69 @@ export const ProvidersPanel = () => {
       })
     } finally {
       setFetching(false)
+    }
+  }
+
+  const onTestCurrentChat = async () => {
+    if (!currentTargetModel) {
+      setStatusMsg({ text: '请先添加一个模型 ID 再测试对话。', error: true })
+      return
+    }
+    if (current.protocol !== 'demo' && current.id !== 'ollama' && !current.apiKey.trim()) {
+      setStatusMsg({ text: '请先填写 API Key。', error: true })
+      return
+    }
+    setTesting(true)
+    setStatusMsg(null)
+    try {
+      const reply = await testProviderConnection(current, currentTargetModel.id)
+      selectProviderModel(current.id, currentTargetModel.id)
+      setStatusMsg({
+        text: `✓ 测试成功并已切换使用（${currentTargetModel.id}）：${reply.slice(0, 60)}`,
+      })
+    } catch (error) {
+      setStatusMsg({
+        text: `测试对话失败（${currentTargetModel.id}）：${error instanceof Error ? error.message : String(error)}`,
+        error: true,
+      })
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  const onTestCustomForm = async () => {
+    const modelId = customForm.modelId.trim() || customFetchedModels[0]?.id
+    if (!customForm.baseUrl.trim()) {
+      setStatusMsg({ text: '请先填写 API Base URL', error: true })
+      return
+    }
+    if (!modelId) {
+      setStatusMsg({ text: '请先拉取或输入一个模型 ID', error: true })
+      return
+    }
+    setTesting(true)
+    setStatusMsg(null)
+    try {
+      const reply = await testProviderConnection(
+        {
+          id: 'custom-preview',
+          name: customForm.name || '自定义接口',
+          protocol: customForm.protocol,
+          baseUrl: customForm.baseUrl,
+          apiKey: customForm.apiKey,
+          models: [{ id: modelId, name: modelId }],
+          enabled: true,
+        },
+        modelId
+      )
+      setStatusMsg({ text: `✓ 对话链路测试成功（${modelId}）：${reply.slice(0, 60)}` })
+    } catch (error) {
+      setStatusMsg({
+        text: `测试对话失败（${modelId}）：${error instanceof Error ? error.message : String(error)}`,
+        error: true,
+      })
+    } finally {
+      setTesting(false)
     }
   }
 
@@ -329,6 +398,14 @@ export const ProvidersPanel = () => {
             <Button
               variant="outlined"
               size="s"
+              disabled={testing}
+              onClick={() => void onTestCustomForm()}
+            >
+              {testing ? '正在测试...' : '测试对话'}
+            </Button>
+            <Button
+              variant="outlined"
+              size="s"
               onClick={() => {
                 setAddingCustom(false)
                 setStatusMsg(null)
@@ -341,7 +418,14 @@ export const ProvidersPanel = () => {
       ) : (
         <div className={styles.card}>
           <div className={styles.cardHeader}>
-            <div className={styles.cardTitle}>{current.name}</div>
+            <div className={styles.row}>
+              <div className={styles.cardTitle}>{current.name}</div>
+              <span className={isCurrentActive ? styles.activeTag : styles.inactiveTag}>
+                {isCurrentActive
+                  ? `当前对话已启用 · ${activeModelId}`
+                  : `未启用（当前正在使用 ${activeProvider.name}）`}
+              </span>
+            </div>
             <span className={styles.protocolTag}>{current.protocol}</span>
           </div>
 
@@ -407,7 +491,7 @@ export const ProvidersPanel = () => {
                   spellCheck={false}
                   className={styles.input}
                   value={current.apiKey}
-                  placeholder="请输入该服务商的 API Key（填完后将自动出现在顶部模型列表）"
+                  placeholder="请输入该服务商的 API Key（填完后请点击下方「使用此服务商」或模型芯片）"
                   onChange={(event) => {
                     const value = event.target.value
                     updateProviderConfig(current.id, { apiKey: value })
@@ -503,13 +587,24 @@ export const ProvidersPanel = () => {
                   variant="primary"
                   size="s"
                   onClick={() => {
-                    selectProviderModel(current.id, current.models[0].id)
-                    setStatusMsg({
-                      text: `已切换到 ${current.name} · ${current.models[0].name}`,
-                    })
+                    const targetModel = currentTargetModel ?? current.models[0]
+                    if (targetModel) {
+                      selectProviderModel(current.id, targetModel.id)
+                      setStatusMsg({
+                        text: `已切换到 ${current.name} · ${targetModel.name}`,
+                      })
+                    }
                   }}
                 >
                   使用此服务商
+                </Button>
+                <Button
+                  variant="outlined"
+                  size="s"
+                  disabled={testing}
+                  onClick={() => void onTestCurrentChat()}
+                >
+                  {testing ? '正在测试...' : '测试对话'}
                 </Button>
                 {current.isCustom ? (
                   <Button

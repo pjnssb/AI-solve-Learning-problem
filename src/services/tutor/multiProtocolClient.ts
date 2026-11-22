@@ -1,4 +1,4 @@
-import { ApiError } from '../api/client.js'
+import { ApiError, streamMessage } from '../api/client.js'
 import { readServerSentEvents } from '../api/sse.js'
 import type { MessageStreamEvent } from '../api/types.js'
 import { getContextRounds, getReplyText } from '../chat/reply.js'
@@ -9,6 +9,9 @@ type SimpleRoleMessage = {
   role: 'system' | 'user' | 'assistant'
   content: string
 }
+
+const normalizeApiKey = (raw: string): string =>
+  raw.trim().replace(/^Bearer\s+/i, '').trim()
 
 const buildSimpleMessages = (
   systemPrompt: string,
@@ -44,21 +47,30 @@ const readHttpError = async (response: Response): Promise<ApiError> => {
   return new ApiError('http', message, response.status)
 }
 
-/** 解析网关地址：若用户只填了纯域名（如 https://api.example.com），自动补全 /v1；若已含路径或完整端点则原样保留 */
-const resolveEndpointUrl = (rawBase: string, endpointSuffix: string): string => {
-  const base = rawBase.trim().replace(/\/+$/, '')
-  if (base.endsWith(endpointSuffix)) {
-    return base
+/**
+ * 解析网关地址候选列表：
+ * - 剥离误粘贴的 /models、/chat/completions、/completions、/messages 后缀
+ * - 纯域名自动补全 /v1；带子路径且无版本段时保留原路径并附带 /v1 兜底候选
+ */
+const resolveEndpointCandidates = (rawBase: string, endpointSuffix: string): string[] => {
+  const trimmed = rawBase.trim().replace(/\/+$/, '')
+  if (trimmed.endsWith(endpointSuffix)) {
+    return [trimmed]
   }
+  const base = trimmed.replace(/\/(chat\/completions|completions|messages|models)$/i, '')
   try {
     const parsed = new URL(base)
     if (parsed.pathname === '' || parsed.pathname === '/') {
-      return `${base}/v1${endpointSuffix}`
+      return [`${base}/v1${endpointSuffix}`]
     }
   } catch {
     // 忽略非标准相对路径
   }
-  return `${base}${endpointSuffix}`
+  const candidates = [`${base}${endpointSuffix}`]
+  if (!/\/v\d+(?:alpha|beta)?$/i.test(base)) {
+    candidates.push(`${base}/v1${endpointSuffix}`)
+  }
+  return candidates
 }
 
 /**
@@ -73,35 +85,52 @@ async function* streamOpenAiCompatible(
   question: UserMessage,
   signal: AbortSignal
 ): AsyncGenerator<MessageStreamEvent> {
-  const url = resolveEndpointUrl(provider.baseUrl, '/chat/completions')
+  const urlCandidates = resolveEndpointCandidates(provider.baseUrl, '/chat/completions')
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Accept: 'text/event-stream',
   }
-  if (provider.apiKey.trim()) {
-    headers.Authorization = `Bearer ${provider.apiKey.trim()}`
+  const apiKey = normalizeApiKey(provider.apiKey)
+  if (apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`
   }
 
-  let response: Response
-  try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model: modelId,
-        messages: buildSimpleMessages(systemPrompt, history, question),
-        stream: true,
-        temperature: 0.5,
-      }),
-      signal,
-    })
-  } catch (error) {
-    if (signal.aborted) {
-      throw error
+  const bodyJson = JSON.stringify({
+    model: modelId,
+    messages: buildSimpleMessages(systemPrompt, history, question),
+    stream: true,
+    temperature: 0.5,
+  })
+
+  let response: Response | null = null
+  for (let idx = 0; idx < urlCandidates.length; idx += 1) {
+    const url = urlCandidates[idx]
+    try {
+      const attempt = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: bodyJson,
+        signal,
+      })
+      if ((attempt.status === 404 || attempt.status === 405) && idx + 1 < urlCandidates.length) {
+        continue
+      }
+      response = attempt
+      break
+    } catch (error) {
+      if (signal.aborted) {
+        throw error
+      }
+      if (idx + 1 < urlCandidates.length) {
+        continue
+      }
+      throw new ApiError('network', error instanceof Error ? error.message : String(error))
     }
-    throw new ApiError('network', error instanceof Error ? error.message : String(error))
   }
 
+  if (!response) {
+    throw new ApiError('network', '无法连接到模型接口')
+  }
   if (!response.ok) {
     throw await readHttpError(response)
   }
@@ -197,7 +226,7 @@ async function* streamOpenAiCompatible(
 }
 
 /**
- * 标准 Anthropic Messages API 流式请求（兼容 Claude 官方接口与兼容代理）。
+ * 标准 Anthropic Messages API 流式请求（兼容 Claude 官方接口与 OneAPI/NewAPI 等 Bearer 鉴权代理）。
  */
 async function* streamAnthropicStandard(
   provider: ProviderConfig,
@@ -208,7 +237,7 @@ async function* streamAnthropicStandard(
   thinking: boolean,
   signal: AbortSignal
 ): AsyncGenerator<MessageStreamEvent> {
-  const url = resolveEndpointUrl(provider.baseUrl, '/messages')
+  const urlCandidates = resolveEndpointCandidates(provider.baseUrl, '/messages')
   const messages = buildSimpleMessages(systemPrompt, history, question)
     .filter((m) => m.role !== 'system')
     .map((m) => ({ role: m.role, content: m.content }))
@@ -223,28 +252,65 @@ async function* streamAnthropicStandard(
   if (thinking) {
     body.thinking = { type: 'enabled', budget_tokens: 2048 }
   }
+  const bodyJson = JSON.stringify(body)
+  const apiKey = normalizeApiKey(provider.apiKey)
 
-  let response: Response
-  try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'text/event-stream',
-        'x-api-key': provider.apiKey.trim(),
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true',
-      },
-      body: JSON.stringify(body),
-      signal,
-    })
-  } catch (error) {
-    if (signal.aborted) {
-      throw error
+  const headerVariants: Record<string, string>[] = [
+    {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+      ...(apiKey ? { 'x-api-key': apiKey } : {}),
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    ...(apiKey
+      ? [
+          {
+            'Content-Type': 'application/json',
+            Accept: 'text/event-stream',
+            Authorization: `Bearer ${apiKey}`,
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true',
+          },
+        ]
+      : []),
+  ]
+
+  let response: Response | null = null
+  outer: for (let uIdx = 0; uIdx < urlCandidates.length; uIdx += 1) {
+    const url = urlCandidates[uIdx]
+    for (let hIdx = 0; hIdx < headerVariants.length; hIdx += 1) {
+      const headers = headerVariants[hIdx]
+      try {
+        const attempt = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: bodyJson,
+          signal,
+        })
+        if ((attempt.status === 401 || attempt.status === 403) && hIdx + 1 < headerVariants.length) {
+          continue
+        }
+        if ((attempt.status === 404 || attempt.status === 405) && uIdx + 1 < urlCandidates.length) {
+          continue outer
+        }
+        response = attempt
+        break outer
+      } catch (error) {
+        if (signal.aborted) {
+          throw error
+        }
+        if (uIdx + 1 < urlCandidates.length) {
+          continue outer
+        }
+        throw new ApiError('network', error instanceof Error ? error.message : String(error))
+      }
     }
-    throw new ApiError('network', error instanceof Error ? error.message : String(error))
   }
 
+  if (!response) {
+    throw new ApiError('network', '无法连接到 Anthropic 接口')
+  }
   if (!response.ok) {
     throw await readHttpError(response)
   }
@@ -328,6 +394,7 @@ async function* streamAnthropicStandard(
 
 /**
  * Google Gemini 原生 REST SSE 流式接口（streamGenerateContent?alt=sse）。
+ * 兼容纯域名自动补全 /v1beta，以及使用 Bearer Token 的聚合代理网关。
  */
 async function* streamGemini(
   provider: ProviderConfig,
@@ -337,34 +404,82 @@ async function* streamGemini(
   question: UserMessage,
   signal: AbortSignal
 ): AsyncGenerator<MessageStreamEvent> {
-  const base = provider.baseUrl.trim().replace(/\/+$/, '')
-  const url = `${base}/models/${encodeURIComponent(modelId)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(provider.apiKey.trim())}`
+  const rawBase = provider.baseUrl
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/models$/i, '')
+  const baseCandidates = [rawBase]
+  if (!/\/v\d+(?:alpha|beta)?$/i.test(rawBase)) {
+    baseCandidates.push(`${rawBase}/v1beta`)
+  }
+  const apiKey = normalizeApiKey(provider.apiKey)
   const contents = buildSimpleMessages(systemPrompt, history, question)
     .filter((m) => m.role !== 'system')
     .map((m) => ({
       role: m.role === 'assistant' ? 'model' : 'user',
       parts: [{ text: m.content }],
     }))
+  const bodyJson = JSON.stringify({
+    systemInstruction: { parts: [{ text: systemPrompt }] },
+    contents,
+    generationConfig: { temperature: 0.5 },
+  })
 
-  let response: Response
-  try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents,
-        generationConfig: { temperature: 0.5 },
-      }),
-      signal,
-    })
-  } catch (error) {
-    if (signal.aborted) {
-      throw error
+  let response: Response | null = null
+  outer: for (let bIdx = 0; bIdx < baseCandidates.length; bIdx += 1) {
+    const base = baseCandidates[bIdx]
+    const endpoint = `${base}/models/${encodeURIComponent(modelId)}:streamGenerateContent?alt=sse`
+    const attempts: { url: string; headers: Record<string, string> }[] = [
+      {
+        url: apiKey ? `${endpoint}&key=${encodeURIComponent(apiKey)}` : endpoint,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { 'x-goog-api-key': apiKey } : {}),
+        },
+      },
+      ...(apiKey
+        ? [
+            {
+              url: endpoint,
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${apiKey}`,
+              },
+            },
+          ]
+        : []),
+    ]
+    for (let aIdx = 0; aIdx < attempts.length; aIdx += 1) {
+      try {
+        const attempt = await fetch(attempts[aIdx].url, {
+          method: 'POST',
+          headers: attempts[aIdx].headers,
+          body: bodyJson,
+          signal,
+        })
+        if ((attempt.status === 401 || attempt.status === 403) && aIdx + 1 < attempts.length) {
+          continue
+        }
+        if ((attempt.status === 404 || attempt.status === 405) && bIdx + 1 < baseCandidates.length) {
+          continue outer
+        }
+        response = attempt
+        break outer
+      } catch (error) {
+        if (signal.aborted) {
+          throw error
+        }
+        if (bIdx + 1 < baseCandidates.length) {
+          continue outer
+        }
+        throw new ApiError('network', error instanceof Error ? error.message : String(error))
+      }
     }
-    throw new ApiError('network', error instanceof Error ? error.message : String(error))
   }
 
+  if (!response) {
+    throw new ApiError('network', '无法连接到 Gemini 接口')
+  }
   if (!response.ok) {
     throw await readHttpError(response)
   }
@@ -447,4 +562,61 @@ export function streamMultiProviderMessage(options: {
     return streamGemini(provider, modelId, systemPrompt, history, question, signal)
   }
   return streamOpenAiCompatible(provider, modelId, systemPrompt, history, question, signal)
+}
+
+/**
+ * 在设置页一键验证「完整对话链路」是否可用：直接走与主对话相同的流式请求通路。
+ */
+export const testProviderConnection = async (
+  provider: ProviderConfig,
+  modelId: string,
+  signal?: AbortSignal
+): Promise<string> => {
+  const controller = new AbortController()
+  const onAbort = () => controller.abort()
+  signal?.addEventListener('abort', onAbort, { once: true })
+
+  const testQuestion: UserMessage = {
+    id: 'test-q',
+    role: 'user',
+    content: 'Reply with OK only.',
+    files: [],
+    createdAt: Date.now(),
+  }
+
+  let replyText = ''
+  try {
+    const events =
+      provider.protocol === 'deepseek-native'
+        ? streamMessage(
+            normalizeApiKey(provider.apiKey),
+            {
+              model: modelId === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash',
+              system: 'You are a helpful assistant.',
+              messages: [{ role: 'user', content: testQuestion.content }],
+              thinking: { type: 'disabled' },
+              safety_check: { level: 'high' },
+              tools: [],
+            },
+            controller.signal
+          )
+        : streamMultiProviderMessage({
+            provider,
+            modelId,
+            systemPrompt: 'You are a helpful assistant.',
+            history: [],
+            question: testQuestion,
+            thinking: false,
+            signal: controller.signal,
+          })
+
+    for await (const event of events) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        replyText += event.delta.text
+      }
+    }
+    return replyText.trim() || 'OK'
+  } finally {
+    signal?.removeEventListener('abort', onAbort)
+  }
 }

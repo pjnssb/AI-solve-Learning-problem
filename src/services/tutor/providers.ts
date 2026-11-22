@@ -499,7 +499,7 @@ export const fetchProviderModels = async (
   if (!base) {
     throw new Error('请先填写 API Base URL')
   }
-  const apiKey = provider.apiKey.trim()
+  const apiKey = provider.apiKey.trim().replace(/^Bearer\s+/i, '').trim()
 
   if (provider.protocol === 'gemini') {
     const candidates = [
