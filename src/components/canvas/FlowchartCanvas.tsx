@@ -71,8 +71,8 @@ const wrapLines = (text: string, maxUnits: number, maxLines: number): string[] =
 }
 
 const computeNodeHeight = (node: FlowNode): number => {
-  const titleLines = wrapLines(node.label, 25, 4)
-  const subLines = node.sublabel ? wrapLines(node.sublabel, 30, 4) : []
+  const titleLines = wrapLines(node.label, 22, 4)
+  const subLines = node.sublabel ? wrapLines(node.sublabel, 29, 4) : []
   if (subLines.length === 0) {
     return Math.max(58, 28 + titleLines.length * 18 + 12)
   }
@@ -346,15 +346,20 @@ export const FlowchartCanvas = ({
     })
   }, [stageSize.width, stageSize.height, layout.bounds.width, layout.bounds.height])
 
-  // 仅当节点数量或排版方向变化时自动适配视图，保留用户手动缩放/拖拽状态
+  // 当节点/连线数量、排版方向或首次容器尺寸测量完成时自动适配视图，保留用户手动缩放/拖拽状态
   const prevFitKeyRef = useRef('')
+  const prevMeasuredRef = useRef(false)
   useEffect(() => {
-    const key = `${flowchart.nodes.length}:${effectiveDirection}`
-    if (key !== prevFitKeyRef.current) {
+    const key = `${flowchart.nodes.length}:${flowchart.edges.length}:${effectiveDirection}`
+    const sizeChangedOnInit = !prevMeasuredRef.current && stageSize.width !== 520
+    if (sizeChangedOnInit) {
+      prevMeasuredRef.current = true
+    }
+    if (key !== prevFitKeyRef.current || sizeChangedOnInit) {
       prevFitKeyRef.current = key
       fitToView()
     }
-  }, [flowchart.nodes.length, effectiveDirection, fitToView])
+  }, [flowchart.nodes.length, flowchart.edges.length, effectiveDirection, stageSize.width, fitToView])
 
   const zoomAt = useCallback(
     (factor: number, cx = stageSize.width / 2, cy = stageSize.height / 2) => {
@@ -688,8 +693,8 @@ export const FlowchartCanvas = ({
               }
               const { x, y, width, height } = pos
               const effectiveStatus = flowStatusOverrides[node.id] ?? node.status
-              const titleLines = wrapLines(node.label, 25, 4)
-              const subLines = node.sublabel ? wrapLines(node.sublabel, 30, 4) : []
+              const titleLines = wrapLines(node.label, 22, 4)
+              const subLines = node.sublabel ? wrapLines(node.sublabel, 29, 4) : []
               const rx = node.kind === 'start' || node.kind === 'result' ? Math.min(28, height / 2) : 14
               const isSolved = effectiveStatus === 'solved'
               const isSelected = selectedFlowNodeId === node.id
@@ -737,81 +742,83 @@ export const FlowchartCanvas = ({
                     }
                   }}
                 >
-                  <rect width={width} height={height} rx={rx} className={cardClass} />
-                  {/* 决策节点左侧菱形标识 */}
-                  {node.kind === 'decision' ? (
+                  <g className={styles.nodeInner}>
+                    <rect width={width} height={height} rx={rx} className={cardClass} />
+                    {/* 决策节点左侧菱形标识 */}
+                    {node.kind === 'decision' ? (
+                      <text
+                        x={12}
+                        y={20}
+                        fill="var(--dsw-static-amber-500)"
+                        fontSize={12}
+                        fontWeight={700}
+                      >
+                        ◇
+                      </text>
+                    ) : null}
+                    {/* 左上角步骤徽章 */}
+                    <rect
+                      x={14}
+                      y={-9}
+                      width={badgeWidth}
+                      height={18}
+                      rx={9}
+                      className={styles.stepBadgeBg}
+                    />
                     <text
-                      x={12}
-                      y={20}
-                      fill="var(--dsw-static-amber-500)"
-                      fontSize={12}
-                      fontWeight={700}
-                    >
-                      ◇
-                    </text>
-                  ) : null}
-                  {/* 左上角步骤徽章 */}
-                  <rect
-                    x={14}
-                    y={-9}
-                    width={badgeWidth}
-                    height={18}
-                    rx={9}
-                    className={styles.stepBadgeBg}
-                  />
-                  <text
-                    x={14 + badgeWidth / 2}
-                    y={3}
-                    textAnchor="middle"
-                    className={styles.stepBadgeText}
-                  >
-                    {stepText}
-                  </text>
-                  {isSolved ? (
-                    <text
-                      x={width - 14}
-                      y={18}
-                      textAnchor="end"
-                      fill="var(--dsw-static-green-500)"
-                      fontSize={12}
-                      fontWeight={700}
-                    >
-                      ✓
-                    </text>
-                  ) : node.kind === 'question' ? (
-                    <text
-                      x={width - 14}
-                      y={18}
-                      textAnchor="end"
-                      fill="var(--dsw-static-amber-500)"
-                      fontSize={12}
-                      fontWeight={700}
-                    >
-                      ?
-                    </text>
-                  ) : null}
-                  {titleLines.map((line, idx) => (
-                    <text
-                      key={idx}
-                      x={width / 2}
-                      y={titleStartY + idx * 18}
+                      x={14 + badgeWidth / 2}
+                      y={3}
                       textAnchor="middle"
-                      className={styles.nodeTitle}
+                      className={styles.stepBadgeText}
                     >
-                      {line}
+                      {stepText}
                     </text>
-                  ))}
-                  {subLines.map((line, idx) => (
-                    <text
-                      key={idx}
-                      x={width / 2}
-                      y={titleStartY + titleLines.length * 18 + 3 + idx * 16}
-                      textAnchor="middle"
-                      className={styles.nodeSubtitle}
-                    >
-                      {line}
-                    </text>
-                  ))}
+                    {isSolved ? (
+                      <text
+                        x={width - 14}
+                        y={18}
+                        textAnchor="end"
+                        fill="var(--dsw-static-green-500)"
+                        fontSize={12}
+                        fontWeight={700}
+                      >
+                        ✓
+                      </text>
+                    ) : node.kind === 'question' ? (
+                      <text
+                        x={width - 14}
+                        y={18}
+                        textAnchor="end"
+                        fill="var(--dsw-static-amber-500)"
+                        fontSize={12}
+                        fontWeight={700}
+                      >
+                        ?
+                      </text>
+                    ) : null}
+                    {titleLines.map((line, idx) => (
+                      <text
+                        key={idx}
+                        x={width / 2}
+                        y={titleStartY + idx * 18}
+                        textAnchor="middle"
+                        className={styles.nodeTitle}
+                      >
+                        {line}
+                      </text>
+                    ))}
+                    {subLines.map((line, idx) => (
+                      <text
+                        key={idx}
+                        x={width / 2}
+                        y={titleStartY + titleLines.length * 18 + 3 + idx * 16}
+                        textAnchor="middle"
+                        className={styles.nodeSubtitle}
+                      >
+                        {line}
+                      </text>
+                    ))}
+                  </g>
                 </g>
               )
             })}
