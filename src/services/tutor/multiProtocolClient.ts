@@ -74,8 +74,159 @@ const resolveEndpointCandidates = (rawBase: string, endpointSuffix: string): str
 }
 
 /**
+ * 流式 <think>...</think> / <thought>...</thought> 标签拆分器：
+ * 兼容 Ollama / vLLM / SiliconFlow / OpenRouter / 各类自建中转站把思维链内嵌在 content 里的情况。
+ */
+const createThinkTagSplitter = () => {
+  const OPEN_TAGS = ['<think>', '<thought>']
+  const CLOSE_TAGS = ['</think>', '</thought>']
+  let inThink = false
+  let buffer = ''
+
+  const findPartialSuffixLen = (str: string, tags: string[]): number => {
+    const lower = str.toLowerCase()
+    const maxCheck = Math.min(str.length, 10)
+    for (let len = maxCheck; len >= 1; len -= 1) {
+      const suffix = lower.slice(-len)
+      if (tags.some((tag) => tag.startsWith(suffix))) {
+        return len
+      }
+    }
+    return 0
+  }
+
+  const push = (chunk: string): { kind: 'thinking' | 'text'; text: string }[] => {
+    buffer += chunk
+    const out: { kind: 'thinking' | 'text'; text: string }[] = []
+
+    while (buffer.length > 0) {
+      const lower = buffer.toLowerCase()
+      if (!inThink) {
+        let foundIdx = -1
+        let foundLen = 0
+        for (const tag of OPEN_TAGS) {
+          const idx = lower.indexOf(tag)
+          if (idx !== -1 && (foundIdx === -1 || idx < foundIdx)) {
+            foundIdx = idx
+            foundLen = tag.length
+          }
+        }
+        if (foundIdx !== -1) {
+          if (foundIdx > 0) {
+            out.push({ kind: 'text', text: buffer.slice(0, foundIdx) })
+          }
+          buffer = buffer.slice(foundIdx + foundLen)
+          inThink = true
+          continue
+        }
+        const hold = findPartialSuffixLen(buffer, OPEN_TAGS)
+        const emitLen = buffer.length - hold
+        if (emitLen > 0) {
+          out.push({ kind: 'text', text: buffer.slice(0, emitLen) })
+          buffer = buffer.slice(emitLen)
+        }
+        break
+      } else {
+        let foundIdx = -1
+        let foundLen = 0
+        for (const tag of CLOSE_TAGS) {
+          const idx = lower.indexOf(tag)
+          if (idx !== -1 && (foundIdx === -1 || idx < foundIdx)) {
+            foundIdx = idx
+            foundLen = tag.length
+          }
+        }
+        if (foundIdx !== -1) {
+          if (foundIdx > 0) {
+            out.push({ kind: 'thinking', text: buffer.slice(0, foundIdx) })
+          }
+          buffer = buffer.slice(foundIdx + foundLen)
+          inThink = false
+          continue
+        }
+        const hold = findPartialSuffixLen(buffer, CLOSE_TAGS)
+        const emitLen = buffer.length - hold
+        if (emitLen > 0) {
+          out.push({ kind: 'thinking', text: buffer.slice(0, emitLen) })
+          buffer = buffer.slice(emitLen)
+        }
+        break
+      }
+    }
+
+    return out
+  }
+
+  const flush = (): { kind: 'thinking' | 'text'; text: string }[] => {
+    if (!buffer) {
+      return []
+    }
+    const item = { kind: inThink ? ('thinking' as const) : ('text' as const), text: buffer }
+    buffer = ''
+    return [item]
+  }
+
+  return { push, flush }
+}
+
+const extractOpenAiReasoning = (delta: Record<string, unknown> | undefined): string => {
+  if (!delta) {
+    return ''
+  }
+  if (typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0) {
+    return delta.reasoning_content
+  }
+  if (typeof delta.reasoning === 'string' && delta.reasoning.length > 0) {
+    return delta.reasoning
+  }
+  if (typeof delta.thinking === 'string' && delta.thinking.length > 0) {
+    return delta.thinking
+  }
+  if (Array.isArray(delta.reasoning_details)) {
+    const parts = delta.reasoning_details
+      .map((item) => {
+        if (typeof item === 'object' && item !== null) {
+          const rec = item as Record<string, unknown>
+          if (typeof rec.text === 'string') {
+            return rec.text
+          }
+          if (typeof rec.summary === 'string') {
+            return rec.summary
+          }
+        }
+        return ''
+      })
+      .filter(Boolean)
+    if (parts.length > 0) {
+      return parts.join('')
+    }
+  }
+  return ''
+}
+
+const buildOpenAiThinkingExtras = (
+  provider: ProviderConfig,
+  modelId: string,
+  thinking: boolean
+): Record<string, unknown> | null => {
+  if (!thinking) {
+    return null
+  }
+  if (provider.id === 'deepseek' && !modelId.toLowerCase().includes('reasoner')) {
+    return { thinking: { type: 'enabled' } }
+  }
+  if (provider.id === 'openrouter') {
+    return { reasoning: { enabled: true } }
+  }
+  if (provider.id === 'qwen' && !modelId.toLowerCase().startsWith('qwq')) {
+    return { enable_thinking: true }
+  }
+  return null
+}
+
+/**
  * OpenAI 兼容协议流式请求（兼容 OpenAI / DeepSeek / OpenRouter / 通义千问 / 硅基流动 / 本地 Ollama 等）。
- * 同时支持 DeepSeek-R1 / QwQ 的 reasoning_content 思考流，以及标准 content 正文流。
+ * 自动解析 reasoning_content / reasoning / reasoning_details / thinking 以及 <think>...</think> 内嵌思维链。
  */
 async function* streamOpenAiCompatible(
   provider: ProviderConfig,
@@ -83,6 +234,7 @@ async function* streamOpenAiCompatible(
   systemPrompt: string,
   history: Message[],
   question: UserMessage,
+  thinking: boolean,
   signal: AbortSignal
 ): AsyncGenerator<MessageStreamEvent> {
   const urlCandidates = resolveEndpointCandidates(provider.baseUrl, '/chat/completions')
@@ -95,36 +247,43 @@ async function* streamOpenAiCompatible(
     headers.Authorization = `Bearer ${apiKey}`
   }
 
-  const bodyJson = JSON.stringify({
+  const basePayload = {
     model: modelId,
     messages: buildSimpleMessages(systemPrompt, history, question),
     stream: true,
     temperature: 0.5,
-  })
+  }
+  const extra = buildOpenAiThinkingExtras(provider, modelId, thinking)
+  const payloadVariants = extra ? [{ ...basePayload, ...extra }, basePayload] : [basePayload]
 
   let response: Response | null = null
-  for (let idx = 0; idx < urlCandidates.length; idx += 1) {
+  outer: for (let idx = 0; idx < urlCandidates.length; idx += 1) {
     const url = urlCandidates[idx]
-    try {
-      const attempt = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: bodyJson,
-        signal,
-      })
-      if ((attempt.status === 404 || attempt.status === 405) && idx + 1 < urlCandidates.length) {
-        continue
+    for (let pIdx = 0; pIdx < payloadVariants.length; pIdx += 1) {
+      try {
+        const attempt = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payloadVariants[pIdx]),
+          signal,
+        })
+        if (attempt.status === 400 && pIdx + 1 < payloadVariants.length) {
+          continue
+        }
+        if ((attempt.status === 404 || attempt.status === 405) && idx + 1 < urlCandidates.length) {
+          continue outer
+        }
+        response = attempt
+        break outer
+      } catch (error) {
+        if (signal.aborted) {
+          throw error
+        }
+        if (idx + 1 < urlCandidates.length) {
+          continue outer
+        }
+        throw new ApiError('network', error instanceof Error ? error.message : String(error))
       }
-      response = attempt
-      break
-    } catch (error) {
-      if (signal.aborted) {
-        throw error
-      }
-      if (idx + 1 < urlCandidates.length) {
-        continue
-      }
-      throw new ApiError('network', error instanceof Error ? error.message : String(error))
     }
   }
 
@@ -145,8 +304,53 @@ async function* streamOpenAiCompatible(
 
   let nextBlockIndex = 0
   let thinkingIndex: number | null = null
+  let thinkingClosed = false
   let textIndex: number | null = null
   let stopReason: 'end_turn' | 'max_tokens' = 'end_turn'
+  const splitter = createThinkTagSplitter()
+
+  const emitThinking = function* (chunkText: string): Generator<MessageStreamEvent> {
+    if (!chunkText) {
+      return
+    }
+    if (thinkingIndex === null || thinkingClosed) {
+      thinkingIndex = nextBlockIndex++
+      thinkingClosed = false
+      yield {
+        type: 'content_block_start',
+        index: thinkingIndex,
+        content_block: { type: 'thinking', thinking: '', signature: '' },
+      }
+    }
+    yield {
+      type: 'content_block_delta',
+      index: thinkingIndex,
+      delta: { type: 'thinking_delta', thinking: chunkText },
+    }
+  }
+
+  const emitText = function* (chunkText: string): Generator<MessageStreamEvent> {
+    if (!chunkText) {
+      return
+    }
+    if (thinkingIndex !== null && !thinkingClosed) {
+      yield { type: 'content_block_stop', index: thinkingIndex }
+      thinkingClosed = true
+    }
+    if (textIndex === null) {
+      textIndex = nextBlockIndex++
+      yield {
+        type: 'content_block_start',
+        index: textIndex,
+        content_block: { type: 'text', text: '' },
+      }
+    }
+    yield {
+      type: 'content_block_delta',
+      index: textIndex,
+      delta: { type: 'text_delta', text: chunkText },
+    }
+  }
 
   for await (const { data } of readServerSentEvents(response.body, signal)) {
     const trimmed = data.trim()
@@ -155,7 +359,7 @@ async function* streamOpenAiCompatible(
     }
     let chunk: {
       choices?: {
-        delta?: { content?: string | null; reasoning_content?: string | null }
+        delta?: Record<string, unknown>
         finish_reason?: string | null
       }[]
       error?: { message?: string }
@@ -175,44 +379,31 @@ async function* streamOpenAiCompatible(
     if (choice.finish_reason === 'length') {
       stopReason = 'max_tokens'
     }
-    const reasoning = choice.delta?.reasoning_content
-    if (typeof reasoning === 'string' && reasoning.length > 0) {
-      if (thinkingIndex === null) {
-        thinkingIndex = nextBlockIndex++
-        yield {
-          type: 'content_block_start',
-          index: thinkingIndex,
-          content_block: { type: 'thinking', thinking: '', signature: '' },
-        }
-      }
-      yield {
-        type: 'content_block_delta',
-        index: thinkingIndex,
-        delta: { type: 'thinking_delta', thinking: reasoning },
-      }
+    const reasoning = extractOpenAiReasoning(choice.delta)
+    if (reasoning) {
+      yield* emitThinking(reasoning)
     }
-    const text = choice.delta?.content
-    if (typeof text === 'string' && text.length > 0) {
-      if (thinkingIndex !== null && textIndex === null) {
-        yield { type: 'content_block_stop', index: thinkingIndex }
-      }
-      if (textIndex === null) {
-        textIndex = nextBlockIndex++
-        yield {
-          type: 'content_block_start',
-          index: textIndex,
-          content_block: { type: 'text', text: '' },
+    const content = choice.delta?.content
+    if (typeof content === 'string' && content.length > 0) {
+      for (const piece of splitter.push(content)) {
+        if (piece.kind === 'thinking') {
+          yield* emitThinking(piece.text)
+        } else {
+          yield* emitText(piece.text)
         }
-      }
-      yield {
-        type: 'content_block_delta',
-        index: textIndex,
-        delta: { type: 'text_delta', text },
       }
     }
   }
 
-  if (thinkingIndex !== null && textIndex === null) {
+  for (const piece of splitter.flush()) {
+    if (piece.kind === 'thinking') {
+      yield* emitThinking(piece.text)
+    } else {
+      yield* emitText(piece.text)
+    }
+  }
+
+  if (thinkingIndex !== null && !thinkingClosed) {
     yield { type: 'content_block_stop', index: thinkingIndex }
   }
   if (textIndex !== null) {
@@ -242,17 +433,16 @@ async function* streamAnthropicStandard(
     .filter((m) => m.role !== 'system')
     .map((m) => ({ role: m.role, content: m.content }))
 
-  const body: Record<string, unknown> = {
+  const baseBody: Record<string, unknown> = {
     model: modelId,
-    max_tokens: 4096,
+    max_tokens: thinking ? 8192 : 4096,
     system: systemPrompt,
     messages,
     stream: true,
   }
-  if (thinking) {
-    body.thinking = { type: 'enabled', budget_tokens: 2048 }
-  }
-  const bodyJson = JSON.stringify(body)
+  const payloadVariants: Record<string, unknown>[] = thinking
+    ? [{ ...baseBody, thinking: { type: 'enabled', budget_tokens: 2048 } }, baseBody]
+    : [baseBody]
   const apiKey = normalizeApiKey(provider.apiKey)
 
   const headerVariants: Record<string, string>[] = [
@@ -281,29 +471,34 @@ async function* streamAnthropicStandard(
     const url = urlCandidates[uIdx]
     for (let hIdx = 0; hIdx < headerVariants.length; hIdx += 1) {
       const headers = headerVariants[hIdx]
-      try {
-        const attempt = await fetch(url, {
-          method: 'POST',
-          headers,
-          body: bodyJson,
-          signal,
-        })
-        if ((attempt.status === 401 || attempt.status === 403) && hIdx + 1 < headerVariants.length) {
-          continue
+      for (let pIdx = 0; pIdx < payloadVariants.length; pIdx += 1) {
+        try {
+          const attempt = await fetch(url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payloadVariants[pIdx]),
+            signal,
+          })
+          if (attempt.status === 400 && pIdx + 1 < payloadVariants.length) {
+            continue
+          }
+          if ((attempt.status === 401 || attempt.status === 403) && hIdx + 1 < headerVariants.length) {
+            break
+          }
+          if ((attempt.status === 404 || attempt.status === 405) && uIdx + 1 < urlCandidates.length) {
+            continue outer
+          }
+          response = attempt
+          break outer
+        } catch (error) {
+          if (signal.aborted) {
+            throw error
+          }
+          if (uIdx + 1 < urlCandidates.length) {
+            continue outer
+          }
+          throw new ApiError('network', error instanceof Error ? error.message : String(error))
         }
-        if ((attempt.status === 404 || attempt.status === 405) && uIdx + 1 < urlCandidates.length) {
-          continue outer
-        }
-        response = attempt
-        break outer
-      } catch (error) {
-        if (signal.aborted) {
-          throw error
-        }
-        if (uIdx + 1 < urlCandidates.length) {
-          continue outer
-        }
-        throw new ApiError('network', error instanceof Error ? error.message : String(error))
       }
     }
   }
@@ -394,7 +589,7 @@ async function* streamAnthropicStandard(
 
 /**
  * Google Gemini 原生 REST SSE 流式接口（streamGenerateContent?alt=sse）。
- * 兼容纯域名自动补全 /v1beta，以及使用 Bearer Token 的聚合代理网关。
+ * 支持 thinkingConfig.includeThoughts 开启思维链并分离 part.thought 输出。
  */
 async function* streamGemini(
   provider: ProviderConfig,
@@ -402,6 +597,7 @@ async function* streamGemini(
   systemPrompt: string,
   history: Message[],
   question: UserMessage,
+  thinking: boolean,
   signal: AbortSignal
 ): AsyncGenerator<MessageStreamEvent> {
   const rawBase = provider.baseUrl
@@ -419,11 +615,24 @@ async function* streamGemini(
       role: m.role === 'assistant' ? 'model' : 'user',
       parts: [{ text: m.content }],
     }))
-  const bodyJson = JSON.stringify({
+
+  const baseBody = {
     systemInstruction: { parts: [{ text: systemPrompt }] },
     contents,
     generationConfig: { temperature: 0.5 },
-  })
+  }
+  const payloadVariants = thinking
+    ? [
+        {
+          ...baseBody,
+          generationConfig: {
+            temperature: 0.5,
+            thinkingConfig: { includeThoughts: true },
+          },
+        },
+        baseBody,
+      ]
+    : [baseBody]
 
   let response: Response | null = null
   outer: for (let bIdx = 0; bIdx < baseCandidates.length; bIdx += 1) {
@@ -450,29 +659,34 @@ async function* streamGemini(
         : []),
     ]
     for (let aIdx = 0; aIdx < attempts.length; aIdx += 1) {
-      try {
-        const attempt = await fetch(attempts[aIdx].url, {
-          method: 'POST',
-          headers: attempts[aIdx].headers,
-          body: bodyJson,
-          signal,
-        })
-        if ((attempt.status === 401 || attempt.status === 403) && aIdx + 1 < attempts.length) {
-          continue
+      for (let pIdx = 0; pIdx < payloadVariants.length; pIdx += 1) {
+        try {
+          const attempt = await fetch(attempts[aIdx].url, {
+            method: 'POST',
+            headers: attempts[aIdx].headers,
+            body: JSON.stringify(payloadVariants[pIdx]),
+            signal,
+          })
+          if (attempt.status === 400 && pIdx + 1 < payloadVariants.length) {
+            continue
+          }
+          if ((attempt.status === 401 || attempt.status === 403) && aIdx + 1 < attempts.length) {
+            break
+          }
+          if ((attempt.status === 404 || attempt.status === 405) && bIdx + 1 < baseCandidates.length) {
+            continue outer
+          }
+          response = attempt
+          break outer
+        } catch (error) {
+          if (signal.aborted) {
+            throw error
+          }
+          if (bIdx + 1 < baseCandidates.length) {
+            continue outer
+          }
+          throw new ApiError('network', error instanceof Error ? error.message : String(error))
         }
-        if ((attempt.status === 404 || attempt.status === 405) && bIdx + 1 < baseCandidates.length) {
-          continue outer
-        }
-        response = attempt
-        break outer
-      } catch (error) {
-        if (signal.aborted) {
-          throw error
-        }
-        if (bIdx + 1 < baseCandidates.length) {
-          continue outer
-        }
-        throw new ApiError('network', error instanceof Error ? error.message : String(error))
       }
     }
   }
@@ -492,10 +706,14 @@ async function* streamGemini(
     message: { id: `gemini-${Date.now()}`, model: modelId },
   }
 
-  let textStarted = false
+  let nextIdx = 0
+  let thinkingIdx: number | null = null
+  let thinkingClosed = false
+  let textIdx: number | null = null
+
   for await (const { data } of readServerSentEvents(response.body, signal)) {
     let payload: {
-      candidates?: { content?: { parts?: { text?: string }[] } }[]
+      candidates?: { content?: { parts?: { text?: string; thought?: boolean }[] } }[]
       error?: { message?: string }
     }
     try {
@@ -508,26 +726,50 @@ async function* streamGemini(
     }
     const parts = payload.candidates?.[0]?.content?.parts ?? []
     for (const part of parts) {
-      if (typeof part.text === 'string' && part.text.length > 0) {
-        if (!textStarted) {
-          textStarted = true
+      if (typeof part.text !== 'string' || part.text.length === 0) {
+        continue
+      }
+      if (part.thought) {
+        if (thinkingIdx === null) {
+          thinkingIdx = nextIdx++
           yield {
             type: 'content_block_start',
-            index: 0,
+            index: thinkingIdx,
+            content_block: { type: 'thinking', thinking: '', signature: '' },
+          }
+        }
+        yield {
+          type: 'content_block_delta',
+          index: thinkingIdx,
+          delta: { type: 'thinking_delta', thinking: part.text },
+        }
+      } else {
+        if (thinkingIdx !== null && !thinkingClosed) {
+          yield { type: 'content_block_stop', index: thinkingIdx }
+          thinkingClosed = true
+        }
+        if (textIdx === null) {
+          textIdx = nextIdx++
+          yield {
+            type: 'content_block_start',
+            index: textIdx,
             content_block: { type: 'text', text: '' },
           }
         }
         yield {
           type: 'content_block_delta',
-          index: 0,
+          index: textIdx,
           delta: { type: 'text_delta', text: part.text },
         }
       }
     }
   }
 
-  if (textStarted) {
-    yield { type: 'content_block_stop', index: 0 }
+  if (thinkingIdx !== null && !thinkingClosed) {
+    yield { type: 'content_block_stop', index: thinkingIdx }
+  }
+  if (textIdx !== null) {
+    yield { type: 'content_block_stop', index: textIdx }
   }
   yield {
     type: 'message_delta',
@@ -559,9 +801,17 @@ export function streamMultiProviderMessage(options: {
     )
   }
   if (provider.protocol === 'gemini') {
-    return streamGemini(provider, modelId, systemPrompt, history, question, signal)
+    return streamGemini(provider, modelId, systemPrompt, history, question, thinking, signal)
   }
-  return streamOpenAiCompatible(provider, modelId, systemPrompt, history, question, signal)
+  return streamOpenAiCompatible(
+    provider,
+    modelId,
+    systemPrompt,
+    history,
+    question,
+    thinking,
+    signal
+  )
 }
 
 /**
