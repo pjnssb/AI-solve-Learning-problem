@@ -3,7 +3,7 @@ import { getContextRounds } from '../chat/reply.js'
 import type { Message, UserMessage } from '../chat/types.js'
 import type { Locale } from '../settings.js'
 import { getCurrentCanvasBoard, useCanvasStore } from './canvasStore.js'
-import { resolvePointCoords } from './toolExecutor.js'
+import { solveCoordinateScene } from './sceneSolver.js'
 
 export type GuidedLesson = {
   id: string
@@ -36,6 +36,21 @@ export const GUIDED_LESSONS: GuidedLesson[] = [
       'Given A(1, 2) and B(5, 4), point P moves along the x-axis. Guide me step by step to find P minimizing PA + PB.',
   },
   {
+    id: 'math-constrained-ladder',
+    subject: 'math',
+    boardType: 'coordinate',
+    titleZh: '约束求解 · 靠墙定长梯中点轨迹',
+    titleEn: 'Constraint Solver · Sliding Ladder Locus',
+    descZh: '限定梯长 AB = 5，拖动动点或梯子线段时程序自动维持约束，并画出中点 M 的轨迹',
+    descEn: 'Fix ladder length AB = 5; drag endpoints or the rod itself while the solver keeps |AB|=5 and traces midpoint M',
+    tagZh: '约束引擎 · 可编程控制',
+    tagEn: 'Constraints · Script',
+    promptZh:
+      '一根长 5 米的梯子 AB 斜靠在直角墙角（A 在 y 轴滑动，B 在 x 轴滑动），请用约束条件限定 AB = 5 并开启中点 M 轨迹留痕，带我探究 M 的运动轨迹！',
+    promptEn:
+      'A 5m ladder AB slides along the y-axis and x-axis. Constrain |AB| = 5 and trace midpoint M to explore its locus!',
+  },
+  {
     id: 'math-parabola-area',
     subject: 'math',
     boardType: 'coordinate',
@@ -64,21 +79,6 @@ export const GUIDED_LESSONS: GuidedLesson[] = [
       '请用思维流程图一步步带我拆解这个英语长难句的语法结构：The scientist who discovered the method that transformed how students learn mathematics won the award.',
     promptEn:
       'Guide me step by step with an incremental flowchart to parse this English sentence: The scientist who discovered the method that transformed how students learn mathematics won the award.',
-  },
-  {
-    id: 'math-quadratic-flowchart',
-    subject: 'math',
-    boardType: 'flowchart',
-    titleZh: '分类讨论 · 一元二次方程求根',
-    titleEn: 'Quadratic Equation Strategy Map',
-    descZh: '通过判别式 Δ 的每一步问答，自己亲手拼出完整的求根决策流程图',
-    descEn: 'Build the discriminant decision flowchart node by node through Socratic questions',
-    tagZh: '逻辑推演 · 渐进流程图',
-    tagEn: 'Logic · Step Flowchart',
-    promptZh:
-      '我想系统梳理一元二次方程 ax² + bx + c = 0 (a ≠ 0) 的求解思路，请不要直接画完，用流程图一步步提问引导我构建！',
-    promptEn:
-      'Help me systematically build a solving strategy flowchart for ax^2 + bx + c = 0 (a != 0) one step at a time.',
   },
 ]
 
@@ -1313,8 +1313,162 @@ const buildCustomDemoTurn = (
   return buildShortestPathTurn(round, userText, tutorMode)
 }
 
+const buildConstrainedLadderTurn = (round: number, _userText: string, tutorMode = true): DemoTurn => {
+  const baseTools = [
+    toolBlock('coord_setup', '初始化坐标系：靠墙定长梯模型', {
+      title: '定长约束：|AB| = 5 梯子中点轨迹',
+      xMin: -1,
+      xMax: 6.5,
+      yMin: -1,
+      yMax: 6.5,
+    }),
+    toolBlock('coord_plot_point', '标出墙角原点 O(0, 0)', {
+      id: 'O',
+      label: 'O(0, 0)',
+      x: 0,
+      y: 0,
+      color: '#64748B',
+      pinned: true,
+    }),
+    toolBlock('coord_add_moving_point', '在 y 轴上添加动点 A（梯顶）', {
+      id: 'A',
+      label: 'A',
+      pathType: 'segment',
+      from: [0, 0],
+      to: [0, 5],
+      tMin: 0,
+      tMax: 5,
+      initialT: 4,
+      color: '#EF4444',
+    }),
+    toolBlock('coord_add_moving_point', '在 x 轴上添加动点 B（梯脚）', {
+      id: 'B',
+      label: 'B',
+      pathType: 'segment',
+      from: [0, 0],
+      to: [5, 0],
+      tMin: 0,
+      tMax: 5,
+      initialT: 3,
+      color: '#3964FE',
+    }),
+    toolBlock('coord_draw_segment', '连接定长梯子 AB', {
+      id: 'seg-AB',
+      fromId: 'A',
+      toId: 'B',
+      color: '#2563EB',
+      label: '梯子 AB',
+      showLength: true,
+    }),
+    toolBlock('coord_add_constraint', '限定梯长恒为 |AB| = 5', {
+      id: 'con-ladder-len',
+      kind: 'fixed_length',
+      pointIds: ['A', 'B'],
+      value: 5,
+      label: '定长约束 |AB| = 5',
+    }),
+    toolBlock('coord_add_derived_point', '构造梯子中点 M 并开启轨迹留痕', {
+      id: 'M',
+      label: 'M',
+      kind: 'midpoint',
+      fromId: 'A',
+      toId: 'B',
+      color: '#10B981',
+      trace: true,
+    }),
+    toolBlock('coord_draw_segment', '连接斜边中线 OM', {
+      id: 'seg-OM',
+      fromId: 'O',
+      toId: 'M',
+      color: '#10B981',
+      dashed: true,
+      showLength: true,
+    }),
+    toolBlock('coord_draw_angle', '标出直角墙角 ∠AOB', {
+      id: 'ang-O',
+      fromId: 'A',
+      vertexId: 'O',
+      toId: 'B',
+      rightAngle: true,
+      color: '#F59E0B',
+    }),
+    toolBlock('coord_add_measurement', '实时监测 OM 长度', {
+      id: 'm-om',
+      label: 'OM',
+      kind: 'distance',
+      pointIds: ['O', 'M'],
+      optimalValue: 2.5,
+      optimalHint: '恒等于 2.5！',
+      color: '#10B981',
+    }),
+  ]
+
+  if (!tutorMode || round >= 1) {
+    const scriptCode = [
+      'if (ctx.isTimelineDriven) {',
+      '  const theta = 0.12 + ctx.progress * (Math.PI / 2 - 0.24);',
+      '  ctx.setPoint("A", 0, 5 * Math.sin(theta));',
+      '  ctx.setPoint("B", 5 * Math.cos(theta), 0);',
+      '}',
+      'const a = ctx.getPoint("A");',
+      'const b = ctx.getPoint("B");',
+      'if (a && b) {',
+      '  const len = ctx.math.dist(a, b);',
+      '  ctx.setStatus("梯长 |AB|=" + len.toFixed(2) + " | 倾斜角=" + (Math.atan2(a.y, b.x) * 180 / Math.PI).toFixed(1) + "°");',
+      '}',
+    ].join('\n')
+
+    return {
+      title: '约束求解 · 靠墙定长梯中点轨迹',
+      thinking:
+        '展示完整的约束求解 + 中点轨迹圆验证，并附上可编程动点控制脚本，让用户既可以点击播放自动演示，也可以随时手动拖动 A、B 或梯子 AB 线段！',
+      content: [
+        ...(round === 0 ? baseTools : []),
+        toolBlock('coord_draw_circle', '绘制以 O 为圆心、半径 2.5 的验证圆', {
+          id: 'circle-locus',
+          centerId: 'O',
+          radius: 2.5,
+          color: '#10B981',
+          dashed: true,
+          label: '轨迹圆 r = 2.5',
+        }),
+        toolBlock('coord_set_script', '编写平滑滑梯演示程序（不锁定手动拖拽）', {
+          id: 'script-ladder',
+          title: '定长滑梯平滑运动控制',
+          description: '自动按角度均匀滑动梯子，且允许随时手动拖动 A、B 或梯子线段',
+          duration: 5,
+          loopMode: 'bounce',
+          autoPlay: false,
+          code: scriptCode,
+        }),
+        '### 核心几何结论\n1. **直角三角形斜边中线定理**：由于 $\\angle AOB = 90^\\circ$ 且 $M$ 是斜边 $AB$ 的中点，无论梯子滑到什么位置，恒有：\n   $$OM = \\frac{1}{2} AB = \\frac{5}{2} = 2.5$$\n2. **轨迹方程**：点 $M$ 到定点 $O(0,0)$ 的距离恒等于 $2.5$，因此中点 $M$ 的运动轨迹是以原点 $O$ 为圆心、半径为 $2.5$ 的**四分之一圆弧**（$x^2 + y^2 = 6.25,\\ x \\ge 0, y \\ge 0$）。\n\n你可以**直接拖动红点 $A$、蓝点 $B$ 或直接抓住梯子线段 $AB$ 拖动**，也可以点击顶部 **「约束 1/1」** 或 **「⚡ 程序」** 查看/修改实时约束与控制代码！',
+      ].join('\n\n'),
+    }
+  }
+
+  return {
+    title: '约束求解 · 靠墙定长梯中点轨迹',
+    thinking:
+      '第一步：利用 coord_add_constraint 设定 |AB| = 5，让用户亲自拖动 A、B 或梯子线段 AB 观察程序自动维持定长，并看着绿色中点 M 留下的轨迹猜想其几何形状。',
+    content: [
+      '太棒了！我已在右侧画板建好靠墙梯子模型，并开启了**实时定长约束 `|AB| = 5`** 和中点 $M$ 的**轨迹留痕**：',
+      ...baseTools,
+      '试着用鼠标**直接拖动红点 $A$、蓝点 $B$，甚至直接抓住梯子线段 $AB$ 滑动**！你会发现程序会自动维持梯子长度恒为 $5$，同时绿色中点 $M$ 会自动画出它的运动轨迹。',
+      '**第 1 步观察**：盯着左上角的实时度量 $OM$ 和绿色轨迹曲线——当梯子滑动时，$OM$ 的长度有什么变化？你觉得点 $M$ 走出来的轨迹是一条直线、抛物线，还是圆弧？为什么？',
+      choicesBlock([
+        'OM 恒等于 2.5，轨迹是以 O 为圆心、半径 2.5 的四分之一圆弧！',
+        '轨迹是一条斜向直线',
+        '用直角三角形性质给我一点提示',
+      ]),
+    ].join('\n\n'),
+  }
+}
+
 const detectLesson = (firstPrompt: string, latestPrompt: string): string => {
   const combined = `${firstPrompt}\n${latestPrompt}`
+  if (/梯子|定长|约束|滑梯|ladder|constraint/i.test(latestPrompt)) {
+    return 'math-constrained-ladder'
+  }
   if (/英语长难句|The scientist who discovered|complex sentence/i.test(latestPrompt)) {
     return 'english-clause-flowchart'
   }
@@ -1328,6 +1482,9 @@ const detectLesson = (firstPrompt: string, latestPrompt: string): string => {
     return 'math-shortest-path'
   }
 
+  if (/梯子|定长|约束|滑梯|ladder|constraint/i.test(combined)) {
+    return 'math-constrained-ladder'
+  }
   if (/英语长难句|The scientist who discovered|complex sentence/i.test(combined)) {
     return 'english-clause-flowchart'
   }
@@ -1372,8 +1529,20 @@ const buildLiveCanvasProbeTurn = (userText: string, tutorMode = true): DemoTurn 
     state.userPoints.length > 0 || state.userSegments.length > 0 || state.userFunctions.length > 0
 
   if (isCoordProbe && (board.hasCoordinate || hasUserCoord)) {
+    const solved = solveCoordinateScene({
+      coord: board.coordinate,
+      tValues: state.tValues,
+      freePositions: state.freePositions,
+      paramValues: state.paramValues,
+      userPoints: state.userPoints,
+      draggedId: state.draggedPointId,
+      disabledConstraintIds: state.disabledConstraintIds,
+      scriptEnabled: state.scriptEnabled,
+      scriptTime: state.scriptTime,
+      scriptCodeOverride: state.scriptCodeOverride,
+    })
     const mp = board.coordinate.movingPoints[0]
-    const pos = mp ? resolvePointCoords(board.coordinate, mp.id, state.tValues) : null
+    const pos = mp ? solved.points[mp.id] : null
     const coordText = pos ? `$(${pos.x.toFixed(2)}, ${pos.y.toFixed(2)})$` : '当前位置'
     const userNote = hasUserCoord
       ? `\n\n我同时看到你在画板上自己添加了 ${state.userPoints.length} 个探索点、${state.userSegments.length} 条探索线段和 ${state.userFunctions.length} 条函数曲线。`
@@ -1387,7 +1556,7 @@ const buildLiveCanvasProbeTurn = (userText: string, tutorMode = true): DemoTurn 
         thinking: '当前为直接解答模式，读取画板实时坐标与自绘元素并给出直接分析。',
         content: [
           `${pointSummary}${userNote}`,
-          '你可以在顶部模型选择器接入真实大模型 API 后，直接针对画板上任意自绘点、辅助线或函数曲线获得精确解析。',
+          '你可以在顶部模型选择器接入真实大模型 API 后，直接针对画板上任意自绘点、约束条件、控制程序或函数曲线获得精确解析。',
         ].join('\n\n'),
       }
     }
@@ -1396,7 +1565,7 @@ const buildLiveCanvasProbeTurn = (userText: string, tutorMode = true): DemoTurn 
       thinking: '读取学生当前画板上的动点实时坐标与自绘元素，给出针对性苏格拉底反馈。',
       content: [
         `我看到你把动点${mp ? ` $${mp.label}$ ` : ''}拖到了 ${coordText}！${userNote}`,
-        '试着对比一下左上角实时测量指标的数值变化：当你向左或向右微调它时，指标是变大还是变小？这说明最值点应该在更靠近哪一侧的位置？',
+        '试着对比一下左上角实时测量指标的数值变化：当你微调它时，指标是变大、变小还是保持不变？这说明几何图形背后藏着什么规律？',
         choicesBlock(['继续下一步推导', '给我一点提示']),
       ].join('\n\n'),
     }
@@ -1459,6 +1628,9 @@ export async function* streamDemoTutorReply(
     switch (lessonId) {
       case 'math-shortest-path':
         turn = buildShortestPathTurn(roundIndex, question.content, tutorMode)
+        break
+      case 'math-constrained-ladder':
+        turn = buildConstrainedLadderTurn(roundIndex, question.content, tutorMode)
         break
       case 'math-parabola-area':
         turn = buildParabolaAreaTurn(roundIndex, question.content, tutorMode)

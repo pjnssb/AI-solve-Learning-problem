@@ -797,9 +797,10 @@ export const FlowchartCanvas = ({
                   transform={`translate(${x}, ${y})`}
                   className={clsx(styles.nodeGroup, isDimmed && styles.dimmed)}
                   onPointerDown={(event) => {
-                    if (event.button !== 0) {
+                    if (event.button !== 0 && event.pointerType === 'mouse') {
                       return
                     }
+                    event.preventDefault()
                     event.stopPropagation()
                     containerRefOrStageCapture(stageRef.current, event.pointerId)
                     const currentOff = nodeOffsets[node.id] ?? { dx: 0, dy: 0 }

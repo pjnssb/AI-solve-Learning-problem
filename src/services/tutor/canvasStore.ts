@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { getReplyText } from '../chat/reply.js'
 import type { Message } from '../chat/types.js'
+import type { Vec2 } from './geometryEngine.js'
 import { applyToolCall } from './toolExecutor.js'
 import { getToolBoardMode, getToolTargetId, parseTutorReply } from './toolParser.js'
 import {
@@ -19,13 +20,13 @@ const WIDTH_STORAGE_KEY = 'ai-tutor:canvas-width'
 const loadWidth = (): number => {
   try {
     const saved = Number(localStorage.getItem(WIDTH_STORAGE_KEY))
-    if (Number.isFinite(saved) && saved >= 340 && saved <= 920) {
+    if (Number.isFinite(saved) && saved >= 340 && saved <= 960) {
       return saved
     }
   } catch {
     // 忽略存储读取异常
   }
-  return 540
+  return 560
 }
 
 type CanvasPanelState = {
@@ -41,6 +42,26 @@ type CanvasPanelState = {
   steps: CanvasStepSnapshot[]
   /** 各动点的实时 t 值 */
   tValues: Record<string, number>
+  /** 自由动点 / 可拖拽点 / 约束暖启动坐标 */
+  freePositions: Record<string, Vec2>
+  /** 独立参数滑块实时值 */
+  paramValues: Record<string, number>
+  /** AI 控制脚本的当前时间轴（秒） */
+  scriptTime: number
+  /** AI 控制脚本开关 */
+  scriptEnabled: boolean
+  /** 当前是否由脚本时间轴驱动（播放/拖动时间轴时为 true；手动拖动动点或滑块时为 false） */
+  scriptTimelineActive: boolean
+  /** 用户在画板内临时微调后的脚本源码（null 表示使用 AI 最新脚本） */
+  scriptCodeOverride: string | null
+  /** 已同步过的最新脚本 ID，用于新脚本到达时自动重置时间并响应 autoPlay */
+  lastSyncedScriptKey: string
+  /** 用户临时禁用的约束 ID 映射 */
+  disabledConstraintIds: Record<string, boolean>
+  /** 动点/派生点运动轨迹留痕点列 */
+  traces: Record<string, Vec2[]>
+  /** 当前正在被用户直接拖动的点 ID（供约束求解器与脚本感知） */
+  draggedPointId: string | null
   playing: boolean
   speed: number
   loopMode: 'bounce' | 'loop'
@@ -72,6 +93,16 @@ export const useCanvasStore = create<CanvasPanelState>(() => ({
   selectedStep: null,
   steps: [],
   tValues: {},
+  freePositions: {},
+  paramValues: {},
+  scriptTime: 0,
+  scriptEnabled: true,
+  scriptTimelineActive: false,
+  scriptCodeOverride: null,
+  lastSyncedScriptKey: '',
+  disabledConstraintIds: {},
+  traces: {},
+  draggedPointId: null,
   playing: false,
   speed: 1,
   loopMode: 'bounce',
@@ -115,7 +146,7 @@ export const toggleMobileFullscreen = () =>
   useCanvasStore.setState((state) => ({ mobileFullscreen: !state.mobileFullscreen }))
 
 export const setCanvasWidth = (width: number) => {
-  const clamped = Math.max(340, Math.min(920, Math.round(width)))
+  const clamped = Math.max(340, Math.min(960, Math.round(width)))
   try {
     localStorage.setItem(WIDTH_STORAGE_KEY, String(clamped))
   } catch {
@@ -162,9 +193,111 @@ export const jumpToMessageStep = (messageId: string, toolCall?: TutorToolCall) =
 export const setMovingPointT = (pointId: string, t: number) =>
   useCanvasStore.setState((state) => ({
     tValues: { ...state.tValues, [pointId]: t },
+    freePositions: Object.fromEntries(
+      Object.entries(state.freePositions).filter(([k]) => k !== pointId)
+    ),
+    scriptTimelineActive: false,
   }))
 
-export const setCanvasPlaying = (playing: boolean) => useCanvasStore.setState({ playing })
+export const setFreePointPosition = (pointId: string, x: number, y: number) =>
+  useCanvasStore.setState((state) => ({
+    freePositions: { ...state.freePositions, [pointId]: { x, y } },
+    scriptTimelineActive: false,
+  }))
+
+export const batchUpdateMotionState = (patch: {
+  tValues?: Record<string, number>
+  freePositions?: Record<string, Vec2>
+  scriptTime?: number
+  scriptTimelineActive?: boolean
+  draggedPointId?: string | null
+}) =>
+  useCanvasStore.setState((state) => ({
+    ...(patch.tValues ? { tValues: { ...state.tValues, ...patch.tValues } } : {}),
+    ...(patch.freePositions
+      ? { freePositions: { ...state.freePositions, ...patch.freePositions } }
+      : {}),
+    ...(patch.scriptTime !== undefined ? { scriptTime: patch.scriptTime } : {}),
+    ...(patch.scriptTimelineActive !== undefined
+      ? { scriptTimelineActive: patch.scriptTimelineActive }
+      : {}),
+    ...(patch.draggedPointId !== undefined ? { draggedPointId: patch.draggedPointId } : {}),
+  }))
+
+export const setDraggedPointId = (draggedPointId: string | null) =>
+  useCanvasStore.setState({ draggedPointId })
+
+export const setParamValue = (paramId: string, value: number) =>
+  useCanvasStore.setState((state) => ({
+    paramValues: { ...state.paramValues, [paramId]: value },
+  }))
+
+export const setScriptTime = (scriptTime: number) =>
+  useCanvasStore.setState({ scriptTime, scriptEnabled: true, scriptTimelineActive: true })
+
+export const setScriptEnabled = (scriptEnabled: boolean) =>
+  useCanvasStore.setState({ scriptEnabled })
+
+export const setScriptTimelineActive = (scriptTimelineActive: boolean) =>
+  useCanvasStore.setState({ scriptTimelineActive })
+
+export const setScriptCodeOverride = (scriptCodeOverride: string | null) =>
+  useCanvasStore.setState({ scriptCodeOverride })
+
+export const toggleConstraintDisabled = (constraintId: string) =>
+  useCanvasStore.setState((state) => ({
+    disabledConstraintIds: {
+      ...state.disabledConstraintIds,
+      [constraintId]: !state.disabledConstraintIds[constraintId],
+    },
+  }))
+
+export const appendTracePoints = (samples: Record<string, Vec2>) =>
+  useCanvasStore.setState((state) => {
+    let changed = false
+    const nextTraces: Record<string, Vec2[]> = { ...state.traces }
+    for (const [id, pt] of Object.entries(samples)) {
+      const arr = nextTraces[id] ?? []
+      const last = arr.at(-1)
+      if (!last || Math.hypot(pt.x - last.x, pt.y - last.y) > 0.04) {
+        const updated = arr.length >= 600 ? [...arr.slice(-599), pt] : [...arr, pt]
+        nextTraces[id] = updated
+        changed = true
+      }
+    }
+    return changed ? { traces: nextTraces } : state
+  })
+
+export const clearTraces = () => useCanvasStore.setState({ traces: {} })
+
+export const resetAllMotionState = () =>
+  useCanvasStore.setState((state) => {
+    const board = getCurrentCanvasBoard(state)
+    const tValues: Record<string, number> = {}
+    for (const mp of board.coordinate.movingPoints) {
+      tValues[mp.id] = mp.initialT
+    }
+    const paramValues: Record<string, number> = {}
+    for (const sl of board.coordinate.sliders) {
+      paramValues[sl.id] = sl.initialValue
+    }
+    return {
+      playing: false,
+      tValues,
+      freePositions: {},
+      paramValues,
+      scriptTime: 0,
+      scriptTimelineActive: false,
+      traces: {},
+    }
+  })
+
+export const setCanvasPlaying = (playing: boolean) =>
+  useCanvasStore.setState((state) => ({
+    playing,
+    ...(playing ? { scriptEnabled: true, scriptTimelineActive: true } : {}),
+    ...(playing ? {} : { scriptTimelineActive: state.scriptTimelineActive }),
+  }))
 
 export const setCanvasSpeed = (speed: number) => useCanvasStore.setState({ speed })
 
@@ -202,6 +335,11 @@ export const addUserCoordPoint = (x: number, y: number) =>
       selectedCoordId: id,
     }
   })
+
+export const updateUserCoordPoint = (id: string, x: number, y: number) =>
+  useCanvasStore.setState((state) => ({
+    userPoints: state.userPoints.map((p) => (p.id === id ? { ...p, x, y } : p)),
+  }))
 
 export const addUserCoordSegment = (fromId: string, toId: string) =>
   useCanvasStore.setState((state) => {
@@ -255,6 +393,15 @@ export const syncCanvasFromMessages = (sessionId: string | null, visibleMessages
       steps: [],
       selectedStep: null,
       tValues: {},
+      freePositions: {},
+      paramValues: {},
+      scriptTime: 0,
+      scriptEnabled: true,
+      scriptCodeOverride: null,
+      lastSyncedScriptKey: '',
+      disabledConstraintIds: {},
+      traces: {},
+      draggedPointId: null,
       playing: false,
       lastAutoOpenedMessageId: '',
       lastSyncedToolCount: 0,
@@ -315,20 +462,63 @@ export const syncCanvasFromMessages = (sessionId: string | null, visibleMessages
   const latestBoard = latestStep?.board
 
   const nextTValues: Record<string, number> = sessionChanged ? {} : { ...prev.tValues }
+  let nextFreePositions: Record<string, Vec2> = sessionChanged ? {} : { ...prev.freePositions }
+  const nextParamValues: Record<string, number> = sessionChanged ? {} : { ...prev.paramValues }
+  let nextScriptTime = sessionChanged ? 0 : prev.scriptTime
+  let nextScriptEnabled = sessionChanged ? true : prev.scriptEnabled
+  let nextScriptCodeOverride = sessionChanged ? null : prev.scriptCodeOverride
+  let nextScriptKey = sessionChanged ? '' : prev.lastSyncedScriptKey
+  let nextPlaying = sessionChanged ? false : prev.playing
+
   if (latestBoard) {
-    for (const mp of latestBoard.coordinate.movingPoints) {
+    const coord = latestBoard.coordinate
+    for (const mp of coord.movingPoints) {
       if (!Object.hasOwn(nextTValues, mp.id)) {
         nextTValues[mp.id] = mp.initialT
       }
     }
-    if (
-      latestStep &&
-      totalTools !== prev.lastSyncedToolCount &&
-      latestStep.toolCalls.some((c) => c.tool === 'coord_set_t')
-    ) {
-      for (const [pointId, targetVal] of Object.entries(latestBoard.coordinate.targetT)) {
-        nextTValues[pointId] = targetVal
+    for (const sl of coord.sliders) {
+      if (!Object.hasOwn(nextParamValues, sl.id)) {
+        nextParamValues[sl.id] = sl.initialValue
       }
+    }
+    if (latestStep && totalTools !== prev.lastSyncedToolCount) {
+      if (latestStep.toolCalls.some((c) => c.tool === 'coord_set_t')) {
+        const targetTIds = new Set(Object.keys(coord.targetT))
+        for (const [pointId, targetVal] of Object.entries(coord.targetT)) {
+          nextTValues[pointId] = targetVal
+        }
+        nextFreePositions = Object.fromEntries(
+          Object.entries(nextFreePositions).filter(([k]) => !targetTIds.has(k))
+        )
+        for (const [pointId, targetPos] of Object.entries(coord.targetPositions)) {
+          nextFreePositions[pointId] = targetPos
+        }
+      }
+      if (latestStep.toolCalls.some((c) => c.tool === 'coord_set_param')) {
+        for (const [key, val] of Object.entries(coord.targetParams)) {
+          if (key === 't' || key === 'scriptTime') {
+            nextScriptTime = val
+          } else {
+            nextParamValues[key] = val
+          }
+        }
+      }
+    }
+    if (coord.motionScript) {
+      const scriptKey = `${sessionId}:${coord.motionScript.id}:${coord.motionScript.code.length}`
+      if (scriptKey !== nextScriptKey) {
+        nextScriptKey = scriptKey
+        nextScriptCodeOverride = null
+        nextScriptEnabled = coord.motionScript.enabled
+        nextScriptTime = 0
+        if (coord.motionScript.autoPlay) {
+          nextPlaying = true
+        }
+      }
+    } else if (nextScriptKey) {
+      nextScriptKey = ''
+      nextScriptCodeOverride = null
     }
   }
 
@@ -343,6 +533,13 @@ export const syncCanvasFromMessages = (sessionId: string | null, visibleMessages
     currentSessionId: sessionId,
     steps,
     tValues: nextTValues,
+    freePositions: nextFreePositions,
+    paramValues: nextParamValues,
+    scriptTime: nextScriptTime,
+    scriptEnabled: nextScriptEnabled,
+    scriptCodeOverride: nextScriptCodeOverride,
+    lastSyncedScriptKey: nextScriptKey,
+    playing: nextPlaying,
     lastSyncedToolCount: totalTools,
     ...(sessionChanged
       ? {
@@ -350,6 +547,9 @@ export const syncCanvasFromMessages = (sessionId: string | null, visibleMessages
           selectedFlowNodeId: null,
           flowDirectionOverride: null,
           flowStatusOverrides: {},
+          disabledConstraintIds: {},
+          traces: {},
+          draggedPointId: null,
           ...(startingFromWelcome
             ? {}
             : {
@@ -357,7 +557,6 @@ export const syncCanvasFromMessages = (sessionId: string | null, visibleMessages
                 userSegments: [],
                 userFunctions: [],
               }),
-          playing: false,
         }
       : {}),
     ...(isNewMessageWithTools

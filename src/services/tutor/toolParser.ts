@@ -5,14 +5,24 @@ const VALID_TOOLS = new Set<TutorToolName>([
   'coord_setup',
   'coord_plot_point',
   'coord_add_moving_point',
+  'coord_add_derived_point',
   'coord_draw_segment',
   'coord_draw_function',
   'coord_draw_polygon',
   'coord_draw_circle',
+  'coord_draw_angle',
   'coord_draw_auxiliary_line',
   'coord_add_measurement',
+  'coord_add_slider',
+  'coord_add_constraint',
+  'coord_remove_constraint',
+  'coord_set_script',
+  'coord_remove_script',
+  'coord_toggle_trace',
+  'coord_update',
   'coord_annotate',
   'coord_set_t',
+  'coord_set_param',
   'coord_highlight',
   'coord_remove',
   'coord_clear',
@@ -24,6 +34,36 @@ const VALID_TOOLS = new Set<TutorToolName>([
   'flow_remove',
   'flow_clear',
 ])
+
+/** 容错工具名别名映射，降低不同模型命名轻微偏差导致的调用丢失 */
+const TOOL_ALIASES: Record<string, TutorToolName> = {
+  coord_add_point: 'coord_plot_point',
+  coord_point: 'coord_plot_point',
+  coord_moving_point: 'coord_add_moving_point',
+  coord_derived_point: 'coord_add_derived_point',
+  coord_construct_point: 'coord_add_derived_point',
+  coord_add_segment: 'coord_draw_segment',
+  coord_draw_line: 'coord_draw_segment',
+  coord_add_function: 'coord_draw_function',
+  coord_add_polygon: 'coord_draw_polygon',
+  coord_add_circle: 'coord_draw_circle',
+  coord_add_angle: 'coord_draw_angle',
+  coord_angle: 'coord_draw_angle',
+  coord_auxiliary_line: 'coord_draw_auxiliary_line',
+  coord_measurement: 'coord_add_measurement',
+  coord_measure: 'coord_add_measurement',
+  coord_slider: 'coord_add_slider',
+  coord_add_param: 'coord_add_slider',
+  coord_constraint: 'coord_add_constraint',
+  coord_set_constraint: 'coord_add_constraint',
+  coord_script: 'coord_set_script',
+  coord_run_script: 'coord_set_script',
+  coord_program: 'coord_set_script',
+  coord_trace: 'coord_toggle_trace',
+  coord_delete: 'coord_remove',
+  coord_edit: 'coord_update',
+  flow_delete: 'flow_remove',
+}
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -45,22 +85,42 @@ const defaultSummary = (tool: TutorToolName, args: Record<string, unknown>): str
       return `标出点 ${label || String(args.id ?? '')}`
     case 'coord_add_moving_point':
       return `添加动点 ${label || String(args.id ?? 'P')}`
+    case 'coord_add_derived_point':
+      return `构造动态点 ${label || String(args.id ?? '')}`
     case 'coord_draw_segment':
       return `绘制线段 ${label || `${String(args.fromId ?? args.from ?? '')}${String(args.toId ?? args.to ?? '')}`}`
     case 'coord_draw_function':
-      return `绘制函数图像 ${label || String(args.expr ?? '')}`
+      return `绘制曲线 ${label || String(args.expr ?? args.yExpr ?? args.rExpr ?? '')}`
     case 'coord_draw_polygon':
       return `绘制多边形 ${label}`
     case 'coord_draw_circle':
       return `绘制圆 ${label}`
+    case 'coord_draw_angle':
+      return `标记角度 ${label || String(args.vertexId ?? '')}`
     case 'coord_draw_auxiliary_line':
       return `作辅助线 ${label || String(args.kind ?? '')}`
     case 'coord_add_measurement':
       return `添加实时度量 ${label}`
+    case 'coord_add_slider':
+      return `添加参数滑块 ${label || String(args.id ?? '')}`
+    case 'coord_add_constraint':
+      return `添加约束条件：${label || String(args.kind ?? '')}`
+    case 'coord_remove_constraint':
+      return `移除约束条件`
+    case 'coord_set_script':
+      return title ? `编写动点控制程序：${title}` : '编写动点控制程序'
+    case 'coord_remove_script':
+      return `停用动点控制程序`
+    case 'coord_toggle_trace':
+      return `切换轨迹留痕`
+    case 'coord_update':
+      return `更新元素 ${String(args.id ?? '')}`
     case 'coord_annotate':
       return `添加标注：${String(args.text ?? label)}`
     case 'coord_set_t':
       return `移动动点至目标位置`
+    case 'coord_set_param':
+      return `设置参数 ${String(args.id ?? args.name ?? '')}`
     case 'coord_highlight':
       return `高亮当前步骤关键元素`
     case 'coord_remove':
@@ -201,20 +261,32 @@ const extractBalancedObjects = (text: string): string[] => {
   return objects
 }
 
+const normalizeToolName = (raw: string): TutorToolName | null => {
+  const trimmed = raw.trim()
+  if (VALID_TOOLS.has(trimmed as TutorToolName)) {
+    return trimmed as TutorToolName
+  }
+  const lower = trimmed.toLowerCase()
+  if (Object.hasOwn(TOOL_ALIASES, lower)) {
+    return TOOL_ALIASES[lower]
+  }
+  return null
+}
+
 const toToolCall = (item: unknown, index: number, subIndex: number): TutorToolCall | null => {
   if (!isRecord(item)) {
     return null
   }
-  const toolName =
+  const rawName =
     typeof item.tool === 'string'
-      ? item.tool.trim()
+      ? item.tool
       : typeof item.name === 'string'
-        ? item.name.trim()
+        ? item.name
         : ''
-  if (!VALID_TOOLS.has(toolName as TutorToolName)) {
+  const tool = normalizeToolName(rawName)
+  if (!tool) {
     return null
   }
-  const tool = toolName as TutorToolName
   const args = isRecord(item.args)
     ? item.args
     : isRecord(item.arguments)
@@ -301,7 +373,6 @@ const parseChoicesJson = (rawJson: string): string[] => {
     }
     return []
   } catch {
-    // 兼容模型输出多行列表形式
     const lines = rawJson
       .split(/\r?\n/)
       .map((line) => line.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').trim())
@@ -315,11 +386,17 @@ const parseChoicesJson = (rawJson: string): string[] => {
 const describePendingTool = (partialBody: string): string => {
   const summaryMatch = partialBody.match(/"summary"\s*:\s*"([^"\\]{2,40})/)
   if (summaryMatch?.[1]) {
-    return `正在绘制：${summaryMatch[1]}...`
+    return `正在执行：${summaryMatch[1]}...`
   }
   const toolMatch = partialBody.match(/"tool"\s*:\s*"([a-z_]+)"/)
   if (toolMatch?.[1]) {
     const t = toolMatch[1]
+    if (t === 'coord_set_script' || t === 'coord_script') {
+      return '正在编写动点控制程序...'
+    }
+    if (t === 'coord_add_constraint' || t === 'coord_constraint') {
+      return '正在设置几何约束条件...'
+    }
     if (t.startsWith('flow_')) {
       return '正在构建流程图节点...'
     }
@@ -342,7 +419,6 @@ export const parseTutorReply = (rawText: string, streaming = true): ParsedTutorR
   let choices: string[] = []
   let callCounter = 0
 
-  // 1. 解析标准及常见变体代码块：```tutor-tool / tutor_tool / tutor-choices / tutor_choices
   let stripped = rawText.replace(
     /```(tutor[-_]tool|tutor[-_]choices)[ \t]*\r?\n?([\s\S]*?)```/gi,
     (_match, kind: string, body: string) => {
@@ -360,7 +436,6 @@ export const parseTutorReply = (rawText: string, streaming = true): ParsedTutorR
     }
   )
 
-  // 2. 兼容模型误用 ```json 包裹的合法画板工具调用
   stripped = stripped.replace(/```json[ \t]*\r?\n([\s\S]*?)```/gi, (match, body: string) => {
     if (!/"tool"\s*:/.test(body)) {
       return match
@@ -373,7 +448,6 @@ export const parseTutorReply = (rawText: string, streaming = true): ParsedTutorR
     return match
   })
 
-  // 3. 兼容 XML 标签格式：<tutor_tool> / <tutor-tool> / <tutor_choices> / <tutor-choices>
   stripped = stripped.replace(
     /<(tutor[-_]tool|tutor[-_]choices)>([\s\S]*?)<\/\1>/gi,
     (_match, kind: string, body: string) => {
@@ -391,14 +465,12 @@ export const parseTutorReply = (rawText: string, streaming = true): ParsedTutorR
     }
   )
 
-  // 4. 处理末尾未闭合的块
   let pendingToolLabel: string | null = null
   const unclosedFence = stripped.match(/```(tutor[-_]tool|tutor[-_]choices)([\s\S]*)$/i)
   if (unclosedFence) {
     const normalized = unclosedFence[1].toLowerCase().replace('_', '-')
     const body = unclosedFence[2] ?? ''
     if (!streaming) {
-      // 回复已结束但模型忘记闭合 ```，尝试抢救已完整输出的工具或选项
       if (normalized === 'tutor-tool') {
         const parsed = parseToolJson(body, callCounter++)
         toolCalls.push(...parsed)
@@ -432,7 +504,6 @@ export const parseTutorReply = (rawText: string, streaming = true): ParsedTutorR
       }
       stripped = stripped.slice(0, unclosedTag.index)
     } else if (streaming) {
-      // 防止刚吐出 "```tutor" 几个字符时闪现
       const partialFence = stripped.match(
         /```(?:t(?:u(?:t(?:o(?:r(?:[-_]?(?:t(?:o(?:o(?:l)?)?)?|c(?:h(?:o(?:i(?:c(?:e(?:s)?)?)?)?)?)?)?)?)?)?)?)?)?$/i
       )

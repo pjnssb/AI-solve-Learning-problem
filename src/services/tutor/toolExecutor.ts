@@ -1,17 +1,32 @@
-import { evalMathExpr } from './mathEval.js'
+import {
+  buildParamMap,
+  computePolygonArea as computePolygonAreaCore,
+  resolveAuxiliaryGeometryInContext,
+  resolvePointInContext,
+  type ResolvedAuxiliaryGeometry,
+} from './geometryEngine.js'
 import {
   createEmptyCoordinateState,
   createEmptyFlowchartState,
+  type CoordAngle,
   type CoordAuxiliaryKind,
   type CoordAuxiliaryLine,
   type CoordCircle,
+  type CoordConstraint,
+  type CoordConstraintKind,
+  type CoordDerivedPoint,
   type CoordFunction,
+  type CoordFunctionKind,
   type CoordMeasurement,
+  type CoordMeasurementKind,
+  type CoordMotionScript,
   type CoordMovingPoint,
   type CoordPoint,
   type CoordPolygon,
   type CoordSegment,
+  type CoordSlider,
   type CoordinateState,
+  type DerivedPointKind,
   type FlowEdge,
   type FlowNode,
   type FlowNodeKind,
@@ -19,6 +34,9 @@ import {
   type TutorBoardState,
   type TutorToolCall,
 } from './types.js'
+
+export type { ResolvedAuxiliaryGeometry }
+export const computePolygonArea = computePolygonAreaCore
 
 const str = (value: unknown, fallback = ''): string =>
   typeof value === 'string' ? value : fallback
@@ -29,6 +47,11 @@ const num = (value: unknown, fallback: number): number =>
     : typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))
       ? Number(value)
       : fallback
+
+const optNum = (value: unknown): number | undefined => {
+  const n = num(value, Number.NaN)
+  return Number.isFinite(n) ? n : undefined
+}
 
 const bool = (value: unknown, fallback: boolean): boolean =>
   typeof value === 'boolean' ? value : fallback
@@ -57,216 +80,8 @@ const upsertById = <T extends { id: string }>(list: T[], item: T): T[] => {
   return next
 }
 
-/**
- * 解析坐标系中任意点的实时坐标（支持固定点、动点、以及辅助线自动生成的动态垂足/对称点）。
- */
-export const resolvePointCoords = (
-  coord: CoordinateState,
-  pointId: string,
-  tValues: Record<string, number>,
-  depth = 0
-): { x: number; y: number } | null => {
-  if (depth > 4) {
-    return null
-  }
-  const fixed = coord.points.find((p) => p.id === pointId)
-  if (fixed) {
-    return { x: fixed.x, y: fixed.y }
-  }
-  const moving = coord.movingPoints.find((p) => p.id === pointId)
-  if (moving) {
-    const t = Object.hasOwn(tValues, moving.id) ? tValues[moving.id] : moving.initialT
-    const clampedT = Math.max(moving.tMin, Math.min(moving.tMax, t))
-    const { path } = moving
-    if (path.type === 'segment') {
-      const a = path.fromId
-        ? resolvePointCoords(coord, path.fromId, tValues, depth + 1)
-        : path.from
-          ? { x: path.from[0], y: path.from[1] }
-          : null
-      const b = path.toId
-        ? resolvePointCoords(coord, path.toId, tValues, depth + 1)
-        : path.to
-          ? { x: path.to[0], y: path.to[1] }
-          : null
-      if (!a || !b) {
-        return null
-      }
-      const ratio =
-        moving.tMax === moving.tMin ? 0 : (clampedT - moving.tMin) / (moving.tMax - moving.tMin)
-      return {
-        x: a.x + (b.x - a.x) * ratio,
-        y: a.y + (b.y - a.y) * ratio,
-      }
-    }
-    if (path.type === 'function') {
-      const y = evalMathExpr(path.expr, { x: clampedT, t: clampedT })
-      return Number.isFinite(y) ? { x: clampedT, y } : null
-    }
-    const x = evalMathExpr(path.xExpr, { t: clampedT, x: clampedT })
-    const y = evalMathExpr(path.yExpr, { t: clampedT, x: clampedT })
-    return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null
-  }
-
-  // 检查是否由某条辅助线动态派生（如垂足 H 或对称点 A'）
-  const aux = coord.auxiliaryLines.find((line) => line.derivedPointId === pointId)
-  if (aux) {
-    const geom = resolveAuxiliaryGeometry(coord, aux, tValues, depth + 1)
-    return geom?.derivedPoint ?? null
-  }
-  return null
-}
-
-export type ResolvedAuxiliaryGeometry = {
-  from: { x: number; y: number }
-  to: { x: number; y: number }
-  derivedPoint?: { x: number; y: number }
-  /** 若需绘制直角符号，提供垂足和两条单位方向向量 */
-  rightAngle?: {
-    vertex: { x: number; y: number }
-    u: { x: number; y: number }
-    v: { x: number; y: number }
-  }
-}
-
-const projectOntoLine = (
-  p: { x: number; y: number },
-  a: { x: number; y: number },
-  b: { x: number; y: number }
-): { x: number; y: number } => {
-  const dx = b.x - a.x
-  const dy = b.y - a.y
-  const lenSq = dx * dx + dy * dy
-  if (lenSq < 1e-9) {
-    return a
-  }
-  const proj = ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq
-  return { x: a.x + proj * dx, y: a.y + proj * dy }
-}
-
-/** 计算辅助线端点（支持动点实时联动垂线、对称线、平行线、连线） */
-export const resolveAuxiliaryGeometry = (
-  coord: CoordinateState,
-  aux: CoordAuxiliaryLine,
-  tValues: Record<string, number>,
-  depth = 0
-): ResolvedAuxiliaryGeometry | null => {
-  const from = resolvePointCoords(coord, aux.fromId, tValues, depth + 1)
-  if (!from) {
-    return null
-  }
-
-  if (aux.kind === 'connect') {
-    if (!aux.toId) {
-      return null
-    }
-    const to = resolvePointCoords(coord, aux.toId, tValues, depth + 1)
-    return to ? { from, to } : null
-  }
-
-  const getTargetLine = (): [{ x: number; y: number }, { x: number; y: number }] | null => {
-    if (aux.axis === 'x') {
-      return [
-        { x: 0, y: 0 },
-        { x: 1, y: 0 },
-      ]
-    }
-    if (aux.axis === 'y') {
-      return [
-        { x: 0, y: 0 },
-        { x: 0, y: 1 },
-      ]
-    }
-    if (aux.targetLineFromId && aux.targetLineToId) {
-      const a = resolvePointCoords(coord, aux.targetLineFromId, tValues, depth + 1)
-      const b = resolvePointCoords(coord, aux.targetLineToId, tValues, depth + 1)
-      if (a && b) {
-        return [a, b]
-      }
-    }
-    return null
-  }
-
-  const line = getTargetLine()
-  if (!line) {
-    return null
-  }
-  const [la, lb] = line
-
-  if (aux.kind === 'perpendicular') {
-    const foot = projectOntoLine(from, la, lb)
-    const dirX = lb.x - la.x
-    const dirY = lb.y - la.y
-    const dirLen = Math.hypot(dirX, dirY) || 1
-    const perpX = from.x - foot.x
-    const perpY = from.y - foot.y
-    const perpLen = Math.hypot(perpX, perpY)
-    const rightAngle =
-      aux.showRightAngle !== false && perpLen > 1e-4
-        ? {
-            vertex: foot,
-            u: { x: dirX / dirLen, y: dirY / dirLen },
-            v: { x: perpX / perpLen, y: perpY / perpLen },
-          }
-        : undefined
-    return {
-      from,
-      to: foot,
-      derivedPoint: foot,
-      rightAngle,
-    }
-  }
-
-  if (aux.kind === 'symmetry') {
-    const foot = projectOntoLine(from, la, lb)
-    const mirror = {
-      x: 2 * foot.x - from.x,
-      y: 2 * foot.y - from.y,
-    }
-    const dirX = lb.x - la.x
-    const dirY = lb.y - la.y
-    const dirLen = Math.hypot(dirX, dirY) || 1
-    const perpX = from.x - foot.x
-    const perpY = from.y - foot.y
-    const perpLen = Math.hypot(perpX, perpY)
-    const rightAngle =
-      aux.showRightAngle !== false && perpLen > 1e-4
-        ? {
-            vertex: foot,
-            u: { x: dirX / dirLen, y: dirY / dirLen },
-            v: { x: perpX / perpLen, y: perpY / perpLen },
-          }
-        : undefined
-    return {
-      from,
-      to: mirror,
-      derivedPoint: mirror,
-      rightAngle,
-    }
-  }
-
-  // parallel：过 from 点作平行于 la-lb 的参考辅助线
-  const dx = lb.x - la.x
-  const dy = lb.y - la.y
-  const len = Math.hypot(dx, dy) || 1
-  const span = Math.max(coord.viewport.xMax - coord.viewport.xMin, 6) * 0.45
-  return {
-    from: { x: from.x - (dx / len) * span, y: from.y - (dy / len) * span },
-    to: { x: from.x + (dx / len) * span, y: from.y + (dy / len) * span },
-  }
-}
-
-export const computePolygonArea = (points: { x: number; y: number }[]): number => {
-  if (points.length < 3) {
-    return 0
-  }
-  let sum = 0
-  for (let i = 0; i < points.length; i += 1) {
-    const next = points[(i + 1) % points.length]
-    sum += points[i].x * next.y - next.x * points[i].y
-  }
-  return Math.abs(sum) * 0.5
-}
+const strEndpointId = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim() ? value.trim() : undefined
 
 const extractXY = (args: Record<string, unknown>): { x: number; y: number } | null => {
   const pair = numPair(args.coords) ?? numPair(args.pos) ?? numPair(args.point)
@@ -343,8 +158,115 @@ const expandViewportForPoints = (
   return changed ? { xMin, xMax, yMin, yMax } : coord.viewport
 }
 
-const strEndpointId = (value: unknown): string | undefined =>
-  typeof value === 'string' && value.trim() ? value.trim() : undefined
+/** 向后兼容：解析坐标系中任意点的实时坐标 */
+export const resolvePointCoords = (
+  coord: CoordinateState,
+  pointId: string,
+  tValues: Record<string, number>
+): { x: number; y: number } | null =>
+  resolvePointInContext(
+    {
+      coord,
+      tValues,
+      params: buildParamMap(coord),
+    },
+    pointId
+  )
+
+/** 向后兼容：计算辅助线端点 */
+export const resolveAuxiliaryGeometry = (
+  coord: CoordinateState,
+  aux: CoordAuxiliaryLine,
+  tValues: Record<string, number>
+): ResolvedAuxiliaryGeometry | null =>
+  resolveAuxiliaryGeometryInContext(
+    {
+      coord,
+      tValues,
+      params: buildParamMap(coord),
+    },
+    aux
+  )
+
+const VALID_DERIVED_KINDS = new Set<DerivedPointKind>([
+  'midpoint',
+  'ratio',
+  'intersection',
+  'perpendicular_foot',
+  'symmetry',
+  'rotate',
+  'translate',
+  'centroid',
+  'circumcenter',
+  'incenter',
+  'orthocenter',
+  'formula',
+])
+
+const VALID_CONSTRAINT_KINDS = new Set<CoordConstraintKind>([
+  'fixed_length',
+  'equal_length',
+  'length_ratio',
+  'perpendicular',
+  'parallel',
+  'fixed_angle',
+  'collinear',
+  'on_segment',
+  'on_line',
+  'on_circle',
+  'on_function',
+  'on_polyline',
+  'midpoint',
+  'symmetric',
+  'fixed_area',
+  'bounds',
+  'custom_equation',
+])
+
+const normalizeConstraintKind = (raw: string): CoordConstraintKind => {
+  const lower = raw.trim().toLowerCase()
+  if (VALID_CONSTRAINT_KINDS.has(lower as CoordConstraintKind)) {
+    return lower as CoordConstraintKind
+  }
+  if (lower === 'distance' || lower === 'length' || lower === 'segment_length') {
+    return 'fixed_length'
+  }
+  if (lower === 'equal' || lower === 'congruent') {
+    return 'equal_length'
+  }
+  if (lower === 'ratio') {
+    return 'length_ratio'
+  }
+  if (lower === 'angle' || lower === 'right_angle') {
+    return 'fixed_angle'
+  }
+  if (lower === 'ortho' || lower === 'orthogonal' || lower === 'perp') {
+    return 'perpendicular'
+  }
+  if (lower === 'area') {
+    return 'fixed_area'
+  }
+  if (lower === 'equation' || lower === 'expr' || lower === 'formula' || lower === 'algebraic') {
+    return 'custom_equation'
+  }
+  if (lower === 'symmetry' || lower === 'reflect') {
+    return 'symmetric'
+  }
+  return 'custom_equation'
+}
+
+const VALID_MEASUREMENT_KINDS = new Set<CoordMeasurementKind>([
+  'distance',
+  'sum_distance',
+  'diff_distance',
+  'ratio',
+  'area',
+  'perimeter',
+  'angle',
+  'slope',
+  'coord',
+  'expr',
+])
 
 /**
  * 纯函数工具执行器：按 Agent 发出的单个工具调用增量更新画板状态。
@@ -360,7 +282,10 @@ export const applyToolCall = (
       return {
         ...state,
         activeMode: 'coordinate',
-        coordinate: createEmptyCoordinateState(),
+        coordinate: {
+          ...createEmptyCoordinateState(),
+          setupVersion: state.coordinate.setupVersion + 1,
+        },
       }
 
     case 'coord_setup': {
@@ -385,6 +310,7 @@ export const applyToolCall = (
           title: str(args.title, state.coordinate.title),
           viewport: nextViewport,
           hasExplicitViewport: true,
+          setupVersion: state.coordinate.setupVersion + 1,
           showGrid: bool(args.showGrid, state.coordinate.showGrid),
         },
       }
@@ -393,12 +319,21 @@ export const applyToolCall = (
     case 'coord_plot_point': {
       const id = str(args.id, `P${state.coordinate.points.length + 1}`)
       const xy = extractXY(args) ?? { x: 0, y: 0 }
+      const rawSymbol = str(args.symbol, 'dot')
+      const symbol: CoordPoint['symbol'] =
+        rawSymbol === 'hollow' || rawSymbol === 'cross' ? rawSymbol : 'dot'
       const point: CoordPoint = {
         id,
         label: str(args.label, `${id}(${xy.x}, ${xy.y})`),
         x: xy.x,
         y: xy.y,
         color: str(args.color, '#3964FE'),
+        draggable: bool(args.draggable, false),
+        pinned: bool(args.pinned, false),
+        trace: bool(args.trace, false),
+        traceColor: typeof args.traceColor === 'string' ? args.traceColor : undefined,
+        symbol,
+        visible: bool(args.visible, true),
         stepIndex,
       }
       return {
@@ -416,39 +351,132 @@ export const applyToolCall = (
 
     case 'coord_add_moving_point': {
       const id = str(args.id, 'P')
-      const inferredType = str(
-        args.pathType,
-        typeof args.xExpr === 'string' && typeof args.yExpr === 'string'
-          ? 'parametric'
-          : typeof args.expr === 'string' && args.expr.trim()
-            ? 'function'
-            : 'segment'
-      )
+      const rawPathType = str(args.pathType, str(args.kind, ''))
+      const inferredType =
+        rawPathType ||
+        (args.circleId || args.centerId || args.radius !== undefined
+          ? 'circle'
+          : Array.isArray(args.vertexIds) || Array.isArray(args.points)
+            ? 'polyline'
+            : typeof args.xExpr === 'string' && typeof args.yExpr === 'string'
+              ? 'parametric'
+              : args.functionId || (typeof args.expr === 'string' && args.expr.trim())
+                ? 'function'
+                : args.segmentId || args.fromId || args.toId || args.from || args.to
+                  ? 'segment'
+                  : 'free')
+
       let path: MovingPointPath
-      if (inferredType === 'function') {
-        path = { type: 'function', expr: str(args.expr, 'x') }
+      const extraCoords: { x: number; y: number }[] = []
+
+      if (inferredType === 'free') {
+        const xy = extractXY(args) ?? { x: 2, y: 2 }
+        extraCoords.push(xy)
+        const boundsObj =
+          typeof args.bounds === 'object' && args.bounds !== null && !Array.isArray(args.bounds)
+            ? (args.bounds as Record<string, unknown>)
+            : args
+        const xMin = optNum(boundsObj.xMin)
+        const xMax = optNum(boundsObj.xMax)
+        const yMin = optNum(boundsObj.yMin)
+        const yMax = optNum(boundsObj.yMax)
+        path = {
+          type: 'free',
+          x: xy.x,
+          y: xy.y,
+          bounds:
+            xMin !== undefined || xMax !== undefined || yMin !== undefined || yMax !== undefined
+              ? { xMin, xMax, yMin, yMax }
+              : undefined,
+        }
+      } else if (inferredType === 'function') {
+        path = {
+          type: 'function',
+          functionId: strEndpointId(args.functionId),
+          expr: str(args.expr, 'x'),
+        }
       } else if (inferredType === 'parametric') {
         path = {
           type: 'parametric',
           xExpr: str(args.xExpr, 'cos(t)'),
           yExpr: str(args.yExpr, 'sin(t)'),
         }
-      } else {
+      } else if (inferredType === 'circle') {
+        const centerPair = numPair(args.center)
+        if (centerPair) {
+          extraCoords.push({ x: centerPair[0], y: centerPair[1] })
+        }
         path = {
-          type: 'segment',
+          type: 'circle',
+          circleId: strEndpointId(args.circleId),
+          centerId: strEndpointId(args.centerId) ?? strEndpointId(args.center),
+          center: centerPair,
+          radius: optNum(args.radius ?? args.r),
+          radiusPointId: strEndpointId(args.radiusPointId),
+        }
+      } else if (inferredType === 'polyline' || inferredType === 'polygon') {
+        const vertexIds = strArray(args.vertexIds).length
+          ? strArray(args.vertexIds)
+          : strArray(args.vertices)
+        const rawPoints = Array.isArray(args.points)
+          ? args.points.map(numPair).filter((p): p is [number, number] => Boolean(p))
+          : undefined
+        if (rawPoints) {
+          for (const [px, py] of rawPoints) {
+            extraCoords.push({ x: px, y: py })
+          }
+        }
+        path = {
+          type: 'polyline',
+          vertexIds: vertexIds.length > 0 ? vertexIds : undefined,
+          points: rawPoints && rawPoints.length > 0 ? rawPoints : undefined,
+          closed: bool(args.closed, inferredType === 'polygon'),
+        }
+      } else if (inferredType === 'line' || inferredType === 'ray') {
+        const fromPair = numPair(args.from)
+        const toPair = numPair(args.to)
+        path = {
+          type: inferredType,
+          segmentId: strEndpointId(args.segmentId),
           fromId: strEndpointId(args.fromId) ?? strEndpointId(args.from),
           toId: strEndpointId(args.toId) ?? strEndpointId(args.to),
-          from: numPair(args.from) ?? [0, 0],
-          to: numPair(args.to) ?? [6, 0],
+          from: fromPair ?? [0, 0],
+          to: toPair ?? [6, 0],
+        }
+      } else {
+        const fromPair = numPair(args.from)
+        const toPair = numPair(args.to)
+        const fromId = strEndpointId(args.fromId) ?? strEndpointId(args.from)
+        const toId = strEndpointId(args.toId) ?? strEndpointId(args.to)
+        path = {
+          type: 'segment',
+          segmentId: strEndpointId(args.segmentId),
+          fromId,
+          toId,
+          from: fromPair ?? [0, 0],
+          to: toPair ?? [6, 0],
+        }
+        if (!fromId && !toId && fromPair && toPair) {
+          extraCoords.push({ x: fromPair[0], y: fromPair[1] }, { x: toPair[0], y: toPair[1] })
         }
       }
-      const defaultTMin = inferredType === 'function' ? state.coordinate.viewport.xMin : 0
+
+      const defaultTMin =
+        path.type === 'function'
+          ? state.coordinate.viewport.xMin
+          : path.type === 'line'
+            ? -10
+            : 0
       const defaultTMax =
-        inferredType === 'function'
+        path.type === 'function'
           ? state.coordinate.viewport.xMax
-          : inferredType === 'segment'
-            ? 1
-            : 4
+          : path.type === 'circle'
+            ? Number((Math.PI * 2).toFixed(4))
+            : path.type === 'segment' || path.type === 'polyline'
+              ? 1
+              : path.type === 'line' || path.type === 'ray'
+                ? 10
+                : 4
       const rawTMin = num(args.tMin, defaultTMin)
       const rawTMax = num(args.tMax, defaultTMax)
       const tMin = Math.min(rawTMin, rawTMax)
@@ -462,11 +490,11 @@ export const applyToolCall = (
         tMax,
         initialT,
         color: str(args.color, '#EF4444'),
+        draggable: bool(args.draggable, true),
+        trace: bool(args.trace, false),
+        traceColor: typeof args.traceColor === 'string' ? args.traceColor : undefined,
+        visible: bool(args.visible, true),
         stepIndex,
-      }
-      const extraCoords: { x: number; y: number }[] = []
-      if (path.type === 'segment' && !path.fromId && path.from && !path.toId && path.to) {
-        extraCoords.push({ x: path.from[0], y: path.from[1] }, { x: path.to[0], y: path.to[1] })
       }
       return {
         ...state,
@@ -476,6 +504,74 @@ export const applyToolCall = (
           ...state.coordinate,
           viewport: expandViewportForPoints(state.coordinate, extraCoords),
           movingPoints: upsertById(state.coordinate.movingPoints, mp),
+          highlightedIds: [id],
+        },
+      }
+    }
+
+    case 'coord_add_derived_point': {
+      const id = str(args.id, `D${state.coordinate.derivedPoints.length + 1}`)
+      const rawKind = str(args.kind, 'midpoint').trim().toLowerCase()
+      const kind: DerivedPointKind = VALID_DERIVED_KINDS.has(rawKind as DerivedPointKind)
+        ? (rawKind as DerivedPointKind)
+        : rawKind === 'foot' || rawKind === 'projection'
+          ? 'perpendicular_foot'
+          : rawKind === 'reflect' || rawKind === 'mirror'
+            ? 'symmetry'
+            : 'midpoint'
+      const targetLineArr = strArray(args.targetLine)
+      const line1Arr = strArray(args.line1)
+      const line2Arr = strArray(args.line2)
+      const derived: CoordDerivedPoint = {
+        id,
+        label: str(args.label, id),
+        kind,
+        pointIds: strArray(args.pointIds).length
+          ? strArray(args.pointIds)
+          : strArray(args.vertexIds).length
+            ? strArray(args.vertexIds)
+            : strArray(args.points),
+        fromId: strEndpointId(args.fromId) ?? strEndpointId(args.from) ?? strEndpointId(args.pointId),
+        toId: strEndpointId(args.toId) ?? strEndpointId(args.to),
+        ratio: optNum(args.ratio),
+        ratioExpr: typeof args.ratioExpr === 'string' ? args.ratioExpr : undefined,
+        axis: args.axis === 'x' || args.axis === 'y' ? args.axis : undefined,
+        targetLineFromId:
+          strEndpointId(args.targetLineFromId) ?? strEndpointId(targetLineArr[0]),
+        targetLineToId:
+          strEndpointId(args.targetLineToId) ?? strEndpointId(targetLineArr[1]),
+        targetSegmentId: strEndpointId(args.targetSegmentId) ?? strEndpointId(args.segmentId),
+        centerId: strEndpointId(args.centerId) ?? strEndpointId(args.center),
+        angleDeg: optNum(args.angleDeg ?? args.angle),
+        angleExpr: typeof args.angleExpr === 'string' ? args.angleExpr : undefined,
+        dx: optNum(args.dx),
+        dy: optNum(args.dy),
+        vectorFromId: strEndpointId(args.vectorFromId),
+        vectorToId: strEndpointId(args.vectorToId),
+        target1Id: strEndpointId(args.target1Id) ?? strEndpointId(args.segment1Id),
+        target2Id: strEndpointId(args.target2Id) ?? strEndpointId(args.segment2Id),
+        line1FromId: strEndpointId(args.line1FromId) ?? strEndpointId(line1Arr[0]),
+        line1ToId: strEndpointId(args.line1ToId) ?? strEndpointId(line1Arr[1]),
+        line2FromId: strEndpointId(args.line2FromId) ?? strEndpointId(line2Arr[0]),
+        line2ToId: strEndpointId(args.line2ToId) ?? strEndpointId(line2Arr[1]),
+        circleId: strEndpointId(args.circleId) ?? strEndpointId(args.circle1Id),
+        circle2Id: strEndpointId(args.circle2Id),
+        index: optNum(args.index),
+        xExpr: typeof args.xExpr === 'string' ? args.xExpr : undefined,
+        yExpr: typeof args.yExpr === 'string' ? args.yExpr : undefined,
+        color: str(args.color, '#10B981'),
+        trace: bool(args.trace, false),
+        traceColor: typeof args.traceColor === 'string' ? args.traceColor : undefined,
+        visible: bool(args.visible, true),
+        stepIndex,
+      }
+      return {
+        ...state,
+        activeMode: 'coordinate',
+        hasCoordinate: true,
+        coordinate: {
+          ...state.coordinate,
+          derivedPoints: upsertById(state.coordinate.derivedPoints, derived),
           highlightedIds: [id],
         },
       }
@@ -515,7 +611,11 @@ export const applyToolCall = (
         color: str(args.color, '#2563EB'),
         label: typeof args.label === 'string' ? args.label : undefined,
         showLength: bool(args.showLength, false),
+        showSlope: bool(args.showSlope, false),
+        ticks: optNum(args.ticks),
         dashed: bool(args.dashed, false),
+        width: optNum(args.width),
+        visible: bool(args.visible, true),
         stepIndex,
       }
       const extraCoords = [
@@ -536,18 +636,71 @@ export const applyToolCall = (
     }
 
     case 'coord_draw_function': {
+      const rawKind = str(args.kind, '')
+      const xExpr = typeof args.xExpr === 'string' ? args.xExpr : undefined
+      const yExpr = typeof args.yExpr === 'string' ? args.yExpr : undefined
+      const rExpr = typeof args.rExpr === 'string' ? args.rExpr : undefined
+      const ineq =
+        args.inequality === '<' ||
+        args.inequality === '<=' ||
+        args.inequality === '>' ||
+        args.inequality === '>='
+          ? args.inequality
+          : undefined
+      const kind: CoordFunctionKind =
+        rawKind === 'parametric' || rawKind === 'polar' || rawKind === 'inequality'
+          ? rawKind
+          : xExpr && yExpr
+            ? 'parametric'
+            : rExpr
+              ? 'polar'
+              : ineq
+                ? 'inequality'
+                : 'explicit'
+
       const expr = str(args.expr)
-      if (!expr) {
+      if (kind === 'explicit' && !expr) {
         return state
       }
+      if (kind === 'inequality' && !expr) {
+        return state
+      }
+      if (kind === 'parametric' && (!xExpr || !yExpr)) {
+        return state
+      }
+      if (kind === 'polar' && !rExpr && !expr) {
+        return state
+      }
+
       const id = str(args.id, `fn-${state.coordinate.functions.length + 1}`)
+      const defaultLabel =
+        kind === 'parametric'
+          ? `(${xExpr}, ${yExpr})`
+          : kind === 'polar'
+            ? `r = ${rExpr ?? expr}`
+            : kind === 'inequality'
+              ? `y ${ineq ?? '<='} ${expr}`
+              : `y = ${expr}`
       const fn: CoordFunction = {
         id,
+        kind,
         expr,
-        label: typeof args.label === 'string' ? args.label : `y = ${expr}`,
+        xExpr,
+        yExpr,
+        rExpr: rExpr ?? (kind === 'polar' ? expr : undefined),
+        inequality: ineq,
+        fill:
+          typeof args.fill === 'string'
+            ? args.fill
+            : kind === 'inequality'
+              ? 'rgba(57, 100, 254, 0.14)'
+              : undefined,
+        label: typeof args.label === 'string' ? args.label : defaultLabel,
         color: str(args.color, '#3964FE'),
         domain: numPair(args.domain),
-        dashed: bool(args.dashed, false),
+        tDomain: numPair(args.tDomain),
+        dashed: bool(args.dashed, ineq === '<' || ineq === '>'),
+        visible: bool(args.visible, true),
         stepIndex,
       }
       return {
@@ -603,6 +756,9 @@ export const applyToolCall = (
         stroke: str(args.stroke, '#3964FE'),
         label: typeof args.label === 'string' ? args.label : undefined,
         showArea: bool(args.showArea, false),
+        showPerimeter: bool(args.showPerimeter, false),
+        dashed: bool(args.dashed, false),
+        visible: bool(args.visible, true),
         stepIndex,
       }
       return {
@@ -641,12 +797,23 @@ export const applyToolCall = (
       const circle: CoordCircle = {
         id,
         centerId,
-        radius: rawRadius !== undefined ? Math.abs(num(rawRadius, 1)) : undefined,
+        radius:
+          typeof rawRadius === 'number' || (typeof rawRadius === 'string' && Number.isFinite(Number(rawRadius)))
+            ? Math.abs(num(rawRadius, 1))
+            : undefined,
+        radiusExpr:
+          typeof args.radiusExpr === 'string'
+            ? args.radiusExpr
+            : typeof rawRadius === 'string' && !Number.isFinite(Number(rawRadius))
+              ? rawRadius
+              : undefined,
         radiusPointId:
           strEndpointId(args.radiusPointId) ?? strEndpointId(args.radiusPoint) ?? undefined,
         color: str(args.color, '#0EA5E9'),
+        fill: typeof args.fill === 'string' ? args.fill : undefined,
         dashed: bool(args.dashed, false),
         label: typeof args.label === 'string' ? args.label : undefined,
+        visible: bool(args.visible, true),
         stepIndex,
       }
       return {
@@ -662,6 +829,40 @@ export const applyToolCall = (
       }
     }
 
+    case 'coord_draw_angle': {
+      const pts = strArray(args.points).length ? strArray(args.points) : strArray(args.pointIds)
+      const fromId = strEndpointId(args.fromId) ?? strEndpointId(args.from) ?? pts[0]
+      const vertexId = strEndpointId(args.vertexId) ?? strEndpointId(args.vertex) ?? pts[1]
+      const toId = strEndpointId(args.toId) ?? strEndpointId(args.to) ?? pts[2]
+      if (!fromId || !vertexId || !toId) {
+        return state
+      }
+      const id = str(args.id, `angle-${fromId}-${vertexId}-${toId}`)
+      const angle: CoordAngle = {
+        id,
+        fromId,
+        vertexId,
+        toId,
+        label: typeof args.label === 'string' ? args.label : undefined,
+        showValue: bool(args.showValue, true),
+        rightAngle: bool(args.rightAngle, false),
+        radius: optNum(args.radius),
+        color: str(args.color, '#F59E0B'),
+        visible: bool(args.visible, true),
+        stepIndex,
+      }
+      return {
+        ...state,
+        activeMode: 'coordinate',
+        hasCoordinate: true,
+        coordinate: {
+          ...state.coordinate,
+          angles: upsertById(state.coordinate.angles, angle),
+          highlightedIds: [id],
+        },
+      }
+    }
+
     case 'coord_draw_auxiliary_line': {
       const fromId = strEndpointId(args.fromId) ?? strEndpointId(args.from)
       if (!fromId) {
@@ -669,7 +870,10 @@ export const applyToolCall = (
       }
       const rawKind = str(args.kind, 'connect')
       const kind: CoordAuxiliaryKind =
-        rawKind === 'perpendicular' || rawKind === 'parallel' || rawKind === 'symmetry'
+        rawKind === 'perpendicular' ||
+        rawKind === 'parallel' ||
+        rawKind === 'symmetry' ||
+        rawKind === 'bisector'
           ? rawKind
           : 'connect'
       const id = str(args.id, `aux-${state.coordinate.auxiliaryLines.length + 1}`)
@@ -685,9 +889,11 @@ export const applyToolCall = (
         kind,
         fromId,
         toId: strEndpointId(args.toId) ?? strEndpointId(args.to),
+        vertexId: strEndpointId(args.vertexId) ?? strEndpointId(args.vertex),
         targetLineFromId:
           strEndpointId(args.targetLineFromId) ?? strEndpointId(targetLineArr[0]),
         targetLineToId: strEndpointId(args.targetLineToId) ?? strEndpointId(targetLineArr[1]),
+        targetSegmentId: strEndpointId(args.targetSegmentId) ?? strEndpointId(args.segmentId),
         axis,
         derivedPointId: strEndpointId(args.derivedPointId),
         derivedPointLabel:
@@ -695,6 +901,7 @@ export const applyToolCall = (
         label: typeof args.label === 'string' ? args.label : undefined,
         color: str(args.color, '#F59E0B'),
         showRightAngle: bool(args.showRightAngle, kind === 'perpendicular' || kind === 'symmetry'),
+        visible: bool(args.visible, true),
         stepIndex,
       }
       return {
@@ -711,11 +918,10 @@ export const applyToolCall = (
 
     case 'coord_add_measurement': {
       const id = str(args.id, `measure-${state.coordinate.measurements.length + 1}`)
-      const rawKind = str(args.kind, 'distance')
-      const kind: CoordMeasurement['kind'] =
-        rawKind === 'sum_distance' || rawKind === 'area' || rawKind === 'coord'
-          ? rawKind
-          : 'distance'
+      const rawKind = str(args.kind, typeof args.expr === 'string' ? 'expr' : 'distance')
+      const kind: CoordMeasurementKind = VALID_MEASUREMENT_KINDS.has(rawKind as CoordMeasurementKind)
+        ? (rawKind as CoordMeasurementKind)
+        : 'distance'
       const rawPairs = Array.isArray(args.pairs)
         ? args.pairs.filter(
             (pair): pair is [string, string] =>
@@ -726,8 +932,9 @@ export const applyToolCall = (
         id,
         label: str(args.label, '度量'),
         kind,
-        pointIds: strArray(args.pointIds),
+        pointIds: strArray(args.pointIds).length ? strArray(args.pointIds) : strArray(args.points),
         pairs: rawPairs,
+        expr: typeof args.expr === 'string' ? args.expr : undefined,
         optimalValue:
           args.optimalValue !== undefined ? num(args.optimalValue, Number.NaN) : undefined,
         optimalHint: typeof args.optimalHint === 'string' ? args.optimalHint : undefined,
@@ -745,10 +952,372 @@ export const applyToolCall = (
       }
     }
 
+    case 'coord_add_slider': {
+      const id = str(args.id, str(args.name, `k${state.coordinate.sliders.length + 1}`)).trim()
+      if (!id) {
+        return state
+      }
+      const rawMin = num(args.min, -5)
+      const rawMax = num(args.max, 5)
+      const min = Math.min(rawMin, rawMax)
+      const max = Math.max(rawMin, rawMax)
+      const step = Math.max(0.001, num(args.step, (max - min) / 100))
+      const initialValue = Math.max(min, Math.min(max, num(args.value ?? args.initialValue, (min + max) / 2)))
+      const slider: CoordSlider = {
+        id,
+        label: str(args.label, id),
+        min,
+        max,
+        step,
+        initialValue,
+        unit: typeof args.unit === 'string' ? args.unit : undefined,
+        stepIndex,
+      }
+      return {
+        ...state,
+        activeMode: 'coordinate',
+        hasCoordinate: true,
+        coordinate: {
+          ...state.coordinate,
+          sliders: upsertById(state.coordinate.sliders, slider),
+        },
+      }
+    }
+
+    case 'coord_add_constraint': {
+      const id = str(args.id, `con-${state.coordinate.constraints.length + 1}`)
+      const kind = normalizeConstraintKind(str(args.kind, str(args.type, 'fixed_length')))
+      const rawPairs = Array.isArray(args.pairs)
+        ? args.pairs.filter(
+            (pair): pair is [string, string] =>
+              Array.isArray(pair) && typeof pair[0] === 'string' && typeof pair[1] === 'string'
+          )
+        : undefined
+      const pointIds = strArray(args.pointIds).length
+        ? strArray(args.pointIds)
+        : strArray(args.points)
+      const targets = strArray(args.targets)
+      const defaultLabel = (() => {
+        if (kind === 'fixed_length') {
+          return `定长 ${pointIds.join('') || str(args.segmentId, '')} = ${args.expr ?? args.value ?? ''}`
+        }
+        if (kind === 'equal_length') {
+          return '等长约束'
+        }
+        if (kind === 'perpendicular') {
+          return '垂直约束 ⊥'
+        }
+        if (kind === 'parallel') {
+          return '平行约束 ∥'
+        }
+        if (kind === 'fixed_angle') {
+          return `定角 ${args.angleDeg ?? args.value ?? 90}°`
+        }
+        if (kind === 'fixed_area') {
+          return `定面积 S = ${args.expr ?? args.value ?? ''}`
+        }
+        if (kind === 'custom_equation') {
+          return `方程 ${str(args.expr, '')}`
+        }
+        return `约束 ${kind}`
+      })()
+
+      const constraint: CoordConstraint = {
+        id,
+        kind,
+        label: str(args.label, defaultLabel),
+        targets: targets.length > 0 ? targets : undefined,
+        pointIds: pointIds.length > 0 ? pointIds : undefined,
+        pointId: strEndpointId(args.pointId),
+        sourceId: strEndpointId(args.sourceId),
+        pairs: rawPairs,
+        segmentId: strEndpointId(args.segmentId),
+        segmentIds: strArray(args.segmentIds).length ? strArray(args.segmentIds) : undefined,
+        circleId: strEndpointId(args.circleId),
+        functionId: strEndpointId(args.functionId),
+        fromId: strEndpointId(args.fromId) ?? strEndpointId(args.from),
+        toId: strEndpointId(args.toId) ?? strEndpointId(args.to),
+        axis: args.axis === 'x' || args.axis === 'y' ? args.axis : undefined,
+        centerId: strEndpointId(args.centerId),
+        value: optNum(args.value ?? args.length ?? args.distance),
+        expr: typeof args.expr === 'string' ? args.expr : undefined,
+        ratio: optNum(args.ratio),
+        angleDeg: optNum(args.angleDeg ?? args.angle),
+        radius: optNum(args.radius ?? args.r),
+        xMin: optNum(args.xMin),
+        xMax: optNum(args.xMax),
+        yMin: optNum(args.yMin),
+        yMax: optNum(args.yMax),
+        enabled: bool(args.enabled, true),
+        stepIndex,
+      }
+      return {
+        ...state,
+        activeMode: 'coordinate',
+        hasCoordinate: true,
+        coordinate: {
+          ...state.coordinate,
+          constraints: upsertById(state.coordinate.constraints, constraint),
+        },
+      }
+    }
+
+    case 'coord_remove_constraint': {
+      const removeSet = new Set<string>([
+        ...strArray(args.ids),
+        ...(typeof args.id === 'string' && args.id.trim() ? [args.id.trim()] : []),
+      ])
+      if (removeSet.size === 0) {
+        return {
+          ...state,
+          activeMode: 'coordinate',
+          coordinate: { ...state.coordinate, constraints: [] },
+        }
+      }
+      return {
+        ...state,
+        activeMode: 'coordinate',
+        coordinate: {
+          ...state.coordinate,
+          constraints: state.coordinate.constraints.filter((c) => !removeSet.has(c.id)),
+        },
+      }
+    }
+
+    case 'coord_set_script': {
+      const code = str(args.code, str(args.script, ''))
+      if (!code.trim()) {
+        return state
+      }
+      const rawLoop = str(args.loopMode, 'bounce')
+      const loopMode: CoordMotionScript['loopMode'] =
+        rawLoop === 'loop' || rawLoop === 'once' ? rawLoop : 'bounce'
+      const script: CoordMotionScript = {
+        id: str(args.id, `script-${stepIndex}`),
+        title: str(args.title, 'AI 动点控制程序'),
+        description: typeof args.description === 'string' ? args.description : undefined,
+        code,
+        duration: Math.max(0.5, num(args.duration, 6)),
+        loopMode,
+        autoPlay: bool(args.autoPlay, false),
+        enabled: bool(args.enabled, true),
+        stepIndex,
+      }
+      return {
+        ...state,
+        activeMode: 'coordinate',
+        hasCoordinate: true,
+        coordinate: {
+          ...state.coordinate,
+          motionScript: script,
+        },
+      }
+    }
+
+    case 'coord_remove_script':
+      return {
+        ...state,
+        activeMode: 'coordinate',
+        coordinate: {
+          ...state.coordinate,
+          motionScript: null,
+        },
+      }
+
+    case 'coord_toggle_trace': {
+      const ids = new Set<string>([
+        ...strArray(args.pointIds),
+        ...strArray(args.ids),
+        ...(typeof args.pointId === 'string' && args.pointId.trim() ? [args.pointId.trim()] : []),
+        ...(typeof args.id === 'string' && args.id.trim() ? [args.id.trim()] : []),
+      ])
+      const enabled = bool(args.enabled, true)
+      const traceColor = typeof args.color === 'string' ? args.color : undefined
+      return {
+        ...state,
+        activeMode: 'coordinate',
+        hasCoordinate: true,
+        coordinate: {
+          ...state.coordinate,
+          points: state.coordinate.points.map((p) =>
+            ids.size === 0 || ids.has(p.id)
+              ? { ...p, trace: enabled, traceColor: traceColor ?? p.traceColor }
+              : p
+          ),
+          movingPoints: state.coordinate.movingPoints.map((mp) =>
+            ids.size === 0 || ids.has(mp.id)
+              ? { ...mp, trace: enabled, traceColor: traceColor ?? mp.traceColor }
+              : mp
+          ),
+          derivedPoints: state.coordinate.derivedPoints.map((dp) =>
+            ids.size === 0 || ids.has(dp.id)
+              ? { ...dp, trace: enabled, traceColor: traceColor ?? dp.traceColor }
+              : dp
+          ),
+        },
+      }
+    }
+
+    case 'coord_update': {
+      const id = str(args.id).trim()
+      if (!id) {
+        return state
+      }
+      const c = state.coordinate
+      const patchColor = typeof args.color === 'string' ? args.color : undefined
+      const patchLabel = typeof args.label === 'string' ? args.label : undefined
+      const patchVisible = typeof args.visible === 'boolean' ? args.visible : undefined
+      const patchDashed = typeof args.dashed === 'boolean' ? args.dashed : undefined
+      const patchTrace = typeof args.trace === 'boolean' ? args.trace : undefined
+      const patchDraggable = typeof args.draggable === 'boolean' ? args.draggable : undefined
+      const patchX = optNum(args.x)
+      const patchY = optNum(args.y)
+
+      return {
+        ...state,
+        activeMode: 'coordinate',
+        hasCoordinate: true,
+        coordinate: {
+          ...c,
+          points: c.points.map((p) =>
+            p.id === id
+              ? {
+                  ...p,
+                  x: patchX ?? p.x,
+                  y: patchY ?? p.y,
+                  color: patchColor ?? p.color,
+                  label: patchLabel ?? p.label,
+                  visible: patchVisible ?? p.visible,
+                  trace: patchTrace ?? p.trace,
+                  draggable: patchDraggable ?? p.draggable,
+                  pinned: typeof args.pinned === 'boolean' ? args.pinned : p.pinned,
+                }
+              : p
+          ),
+          movingPoints: c.movingPoints.map((mp) =>
+            mp.id === id
+              ? {
+                  ...mp,
+                  color: patchColor ?? mp.color,
+                  label: patchLabel ?? mp.label,
+                  visible: patchVisible ?? mp.visible,
+                  trace: patchTrace ?? mp.trace,
+                  draggable: patchDraggable ?? mp.draggable,
+                  tMin: optNum(args.tMin) ?? mp.tMin,
+                  tMax: optNum(args.tMax) ?? mp.tMax,
+                }
+              : mp
+          ),
+          derivedPoints: c.derivedPoints.map((dp) =>
+            dp.id === id
+              ? {
+                  ...dp,
+                  color: patchColor ?? dp.color,
+                  label: patchLabel ?? dp.label,
+                  visible: patchVisible ?? dp.visible,
+                  trace: patchTrace ?? dp.trace,
+                }
+              : dp
+          ),
+          segments: c.segments.map((s) =>
+            s.id === id
+              ? {
+                  ...s,
+                  color: patchColor ?? s.color,
+                  label: patchLabel ?? s.label,
+                  visible: patchVisible ?? s.visible,
+                  dashed: patchDashed ?? s.dashed,
+                  showLength: typeof args.showLength === 'boolean' ? args.showLength : s.showLength,
+                  ticks: optNum(args.ticks) ?? s.ticks,
+                }
+              : s
+          ),
+          functions: c.functions.map((f) =>
+            f.id === id
+              ? {
+                  ...f,
+                  expr: typeof args.expr === 'string' ? args.expr : f.expr,
+                  color: patchColor ?? f.color,
+                  label: patchLabel ?? f.label,
+                  visible: patchVisible ?? f.visible,
+                  dashed: patchDashed ?? f.dashed,
+                }
+              : f
+          ),
+          polygons: c.polygons.map((poly) =>
+            poly.id === id
+              ? {
+                  ...poly,
+                  fill: typeof args.fill === 'string' ? args.fill : poly.fill,
+                  stroke: typeof args.stroke === 'string' ? args.stroke : patchColor ?? poly.stroke,
+                  label: patchLabel ?? poly.label,
+                  visible: patchVisible ?? poly.visible,
+                  showArea: typeof args.showArea === 'boolean' ? args.showArea : poly.showArea,
+                }
+              : poly
+          ),
+          circles: c.circles.map((circ) =>
+            circ.id === id
+              ? {
+                  ...circ,
+                  radius: optNum(args.radius) ?? circ.radius,
+                  color: patchColor ?? circ.color,
+                  label: patchLabel ?? circ.label,
+                  visible: patchVisible ?? circ.visible,
+                  dashed: patchDashed ?? circ.dashed,
+                }
+              : circ
+          ),
+          angles: c.angles.map((ang) =>
+            ang.id === id
+              ? {
+                  ...ang,
+                  color: patchColor ?? ang.color,
+                  label: patchLabel ?? ang.label,
+                  visible: patchVisible ?? ang.visible,
+                }
+              : ang
+          ),
+          auxiliaryLines: c.auxiliaryLines.map((aux) =>
+            aux.id === id
+              ? {
+                  ...aux,
+                  color: patchColor ?? aux.color,
+                  label: patchLabel ?? aux.label,
+                  visible: patchVisible ?? aux.visible,
+                }
+              : aux
+          ),
+          annotations: c.annotations.map((n) =>
+            n.id === id
+              ? {
+                  ...n,
+                  text: typeof args.text === 'string' ? args.text : n.text,
+                  color: patchColor ?? n.color,
+                  visible: patchVisible ?? n.visible,
+                }
+              : n
+          ),
+          constraints: c.constraints.map((con) =>
+            con.id === id
+              ? {
+                  ...con,
+                  label: patchLabel ?? con.label,
+                  enabled: typeof args.enabled === 'boolean' ? args.enabled : con.enabled,
+                  value: optNum(args.value) ?? con.value,
+                  expr: typeof args.expr === 'string' ? args.expr : con.expr,
+                }
+              : con
+          ),
+        },
+      }
+    }
+
     case 'coord_set_t': {
       const pointId = str(args.pointId, str(args.id, 'P'))
-      const t = num(args.t, Number.NaN)
-      if (!Number.isFinite(t)) {
+      const xy = extractXY(args)
+      const t = optNum(args.t)
+      if (t === undefined && !xy) {
         return state
       }
       return {
@@ -757,8 +1326,28 @@ export const applyToolCall = (
         hasCoordinate: true,
         coordinate: {
           ...state.coordinate,
-          targetT: { ...state.coordinate.targetT, [pointId]: t },
+          targetT: t !== undefined ? { ...state.coordinate.targetT, [pointId]: t } : state.coordinate.targetT,
+          targetPositions: xy
+            ? { ...state.coordinate.targetPositions, [pointId]: xy }
+            : state.coordinate.targetPositions,
           highlightedIds: [pointId],
+        },
+      }
+    }
+
+    case 'coord_set_param': {
+      const id = str(args.id, str(args.name, '')).trim()
+      const value = optNum(args.value ?? args.t)
+      if (!id || value === undefined) {
+        return state
+      }
+      return {
+        ...state,
+        activeMode: 'coordinate',
+        hasCoordinate: true,
+        coordinate: {
+          ...state.coordinate,
+          targetParams: { ...state.coordinate.targetParams, [id]: value },
         },
       }
     }
@@ -799,6 +1388,7 @@ export const applyToolCall = (
             y: xy?.y,
             anchorPointId,
             color: str(args.color, '#3964FE'),
+            visible: bool(args.visible, true),
             stepIndex,
           }),
           highlightedIds: [id],
@@ -825,6 +1415,9 @@ export const applyToolCall = (
       const nextTargetT = Object.fromEntries(
         Object.entries(state.coordinate.targetT).filter(([key]) => !removeSet.has(key))
       )
+      const nextTargetPositions = Object.fromEntries(
+        Object.entries(state.coordinate.targetPositions).filter(([key]) => !removeSet.has(key))
+      )
       return {
         ...state,
         activeMode: 'coordinate',
@@ -832,6 +1425,7 @@ export const applyToolCall = (
           ...state.coordinate,
           points: state.coordinate.points.filter((p) => !removeSet.has(p.id)),
           movingPoints: state.coordinate.movingPoints.filter((p) => !removeSet.has(p.id)),
+          derivedPoints: state.coordinate.derivedPoints.filter((p) => !removeSet.has(p.id)),
           segments: state.coordinate.segments.filter(
             (s) =>
               !removeSet.has(s.id) &&
@@ -841,13 +1435,17 @@ export const applyToolCall = (
           functions: state.coordinate.functions.filter((f) => !removeSet.has(f.id)),
           polygons: state.coordinate.polygons.filter((p) => !removeSet.has(p.id)),
           circles: state.coordinate.circles.filter((c) => !removeSet.has(c.id)),
+          angles: state.coordinate.angles.filter((a) => !removeSet.has(a.id)),
           auxiliaryLines: state.coordinate.auxiliaryLines.filter(
             (a) => !removeSet.has(a.id) && !(a.derivedPointId && removeSet.has(a.derivedPointId))
           ),
           measurements: state.coordinate.measurements.filter((m) => !removeSet.has(m.id)),
           annotations: state.coordinate.annotations.filter((n) => !removeSet.has(n.id)),
+          sliders: state.coordinate.sliders.filter((s) => !removeSet.has(s.id)),
+          constraints: state.coordinate.constraints.filter((c) => !removeSet.has(c.id)),
           highlightedIds: state.coordinate.highlightedIds.filter((id) => !removeSet.has(id)),
           targetT: nextTargetT,
+          targetPositions: nextTargetPositions,
         },
       }
     }

@@ -9,11 +9,37 @@ const getToolBadge = (call: TutorToolCall): { label: string; kind: 'coord' | 'au
   if (call.tool === 'board_switch') {
     return { label: '切换', kind: 'coord' }
   }
-  if (call.tool === 'coord_remove' || call.tool === 'flow_remove') {
+  if (
+    call.tool === 'coord_remove' ||
+    call.tool === 'flow_remove' ||
+    call.tool === 'coord_remove_constraint' ||
+    call.tool === 'coord_remove_script'
+  ) {
     return { label: '擦除', kind: 'aux' }
   }
   if (isFlowchartTool(call.tool)) {
     return { label: '流程', kind: 'flow' }
+  }
+  if (call.tool === 'coord_add_constraint') {
+    return { label: '约束', kind: 'flow' }
+  }
+  if (call.tool === 'coord_set_script') {
+    return { label: '程序', kind: 'flow' }
+  }
+  if (call.tool === 'coord_add_slider' || call.tool === 'coord_set_param') {
+    return { label: '滑块', kind: 'coord' }
+  }
+  if (call.tool === 'coord_add_derived_point') {
+    return { label: '构造', kind: 'aux' }
+  }
+  if (call.tool === 'coord_draw_angle') {
+    return { label: '角度', kind: 'aux' }
+  }
+  if (call.tool === 'coord_toggle_trace') {
+    return { label: '轨迹', kind: 'aux' }
+  }
+  if (call.tool === 'coord_update') {
+    return { label: '更新', kind: 'coord' }
   }
   if (call.tool === 'coord_draw_auxiliary_line' || call.tool === 'coord_add_moving_point') {
     return {
