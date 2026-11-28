@@ -45,14 +45,25 @@ export class ServerSentEventDecoder {
     return events
   }
 
-  /** 流结束：结尾的 CR 是完整的换行，其余未以空行结尾的事件按规范丢弃 */
+  /** 流结束：补齐结尾未换行的最后一行与缺少尾空行的事件，兼容部分省略结尾空行的网关。 */
   end(): ServerSentEvent[] {
-    const event = this.buffer.endsWith('\r') ? this.processLine(this.buffer.slice(0, -1)) : null
+    const events: ServerSentEvent[] = []
+    if (this.buffer) {
+      const line = this.buffer.endsWith('\r') ? this.buffer.slice(0, -1) : this.buffer
+      const event = this.processLine(line)
+      if (event) {
+        events.push(event)
+      }
+    }
+    const trailing = this.dispatch()
+    if (trailing) {
+      events.push(trailing)
+    }
     this.buffer = ''
     this.data = ''
     this.hasData = false
     this.eventType = ''
-    return event ? [event] : []
+    return events
   }
 
   private processLine(line: string): ServerSentEvent | null {

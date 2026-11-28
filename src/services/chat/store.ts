@@ -52,6 +52,8 @@ const SESSION_CACHE_LIMIT = 5
 const SAFETY_CHECK = { level: 'high' } as const
 /** 服务端判定 file_id 失效后，重新补传并重发的最多次数（不含首次请求） */
 const FILE_RETRY_LIMIT = 2
+/** 尚未输出正文前遇到断流、网络抖动或上游繁忙时自动重试的最多次数（不含首次请求） */
+const STREAM_RETRY_LIMIT = 2
 /** 退避基数，第 n 次重试等待 2^n 倍；连续失败达到上限就放弃，把原始报错展示出来 */
 const FILE_RETRY_BASE_DELAY = 1000
 
@@ -992,10 +994,31 @@ const waitForRetry = (attempt: number, signal: AbortSignal) =>
     signal.addEventListener('abort', onAbort, { once: true })
   })
 
+/** 断流、网络抖动、限流或服务端临时繁忙均属于可安全自动重试的瞬时故障 */
+const isRetryableStreamError = (error: unknown): boolean => {
+  if (!(error instanceof ApiError)) {
+    return false
+  }
+  if (error.kind === 'interrupted' || error.kind === 'network') {
+    return true
+  }
+  if (error.kind === 'http') {
+    return (
+      error.status === 429 ||
+      error.status === 502 ||
+      error.status === 503 ||
+      error.status === 504 ||
+      error.status === 529
+    )
+  }
+  return false
+}
+
 /**
  * 请求并消费流：先补齐附件的 serverId，再发请求；流式增量按动画帧刷新内存，完成、失败或停止后落盘。
  * 补传失败时回复记为 upload 错误，可重试。
- * 服务端判定 file_id 失效时重新补传后重发，退避重试且次数有上限，超过则按原始报错收尾。
+ * 服务端判定 file_id 失效时重新补传后重发；尚未输出正文前遇到意外断流或瞬时网络故障时自动退避重试，
+ * 避免 AI 在思考阶段无故停止；所有重试均立即响应用户手动停止。
  */
 const streamReply = async (sessionId: string, initial: AssistantMessage, request: Request) => {
   const controller = new AbortController()
@@ -1012,19 +1035,32 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   }
   streamFlushes.set(sessionId, flush)
 
+  // 续写沿用原画板快照；新回复在发送前固化当前画板快照，写入回复记录以维持多轮前缀稳定。
+  const canvasContext = request.prefix
+    ? request.prefix.canvasContext
+    : buildCanvasContextSummary() || undefined
+  if (canvasContext !== reply.canvasContext) {
+    reply = { ...reply, canvasContext }
+    updateReply(sessionId, reply)
+    persist(sessionId)
+  }
+
+  let fileRetries = 0
+  let streamRetries = 0
+
   try {
-    for (let attempt = 0; ; attempt += 1) {
+    for (;;) {
       /** 附件补齐前出错属于上传失败，请求还没有发出 */
       let preparing = true
       let receivedContent = false
+      let receivedAnswerText = false
+      let receivedToolOrTemplate = false
+      let attemptBaseReply = reply
       try {
         const { provider, model } = getActiveProviderAndModel()
         const settingsState = useSettings.getState()
-        const canvasContext = buildCanvasContextSummary()
-        const baseSystemPrompt = buildSystemPrompt(settingsState.locale, settingsState.tutorMode)
-        const systemPrompt = canvasContext
-          ? `${baseSystemPrompt}\n\n${canvasContext}`
-          : baseSystemPrompt
+        // systemPrompt 保持纯静态，不拼接动态画板状态，最大化各服务商 Prompt KV 缓存命中率。
+        const systemPrompt = buildSystemPrompt(settingsState.locale, settingsState.tutorMode)
 
         const prepared =
           provider.protocol === 'deepseek-native'
@@ -1034,6 +1070,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
 
         let events: AsyncGenerator<import('../api/types.js').MessageStreamEvent>
         if (provider.protocol === 'demo') {
+          attemptBaseReply = reply
           events = streamDemoTutorReply(
             prepared.history,
             prepared.question,
@@ -1045,16 +1082,20 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         } else if (provider.protocol === 'deepseek-native') {
           const latestReminder = prepared.prefix
             ? prepared.prefix.latestReminder
-            : createLatestReminder(settingsState)
-          reply = { ...reply, latestReminder }
-          updateReply(sessionId, reply)
-          persist(sessionId)
+            : (reply.latestReminder ?? createLatestReminder(settingsState))
+          if (latestReminder !== reply.latestReminder) {
+            reply = { ...reply, latestReminder }
+            updateReply(sessionId, reply)
+            persist(sessionId)
+          }
+          attemptBaseReply = reply
           const messages = toRequestMessages(
             prepared.history,
             prepared.question,
             prepared.prefix,
             initial.thinking ?? false,
-            latestReminder
+            latestReminder,
+            canvasContext
           )
           const nativeModel: ChatModel = model.id === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : MODEL
           events = streamMessage(
@@ -1079,6 +1120,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             )
             titleRequests.delete(controller)
           }
+          attemptBaseReply = reply
           events = streamMultiProviderMessage({
             provider,
             modelId: model.id,
@@ -1087,11 +1129,31 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             question: prepared.question,
             thinking: initial.thinking ?? false,
             signal: controller.signal,
+            canvasContext,
+            prefix: prepared.prefix,
+            sessionId,
           })
         }
         const blockIndexes = new Map<number, number>()
         for await (const event of events) {
           receivedContent ||= event.type === 'content_block_start'
+          if (event.type === 'content_block_start') {
+            if (event.content_block.type === 'text' && event.content_block.text.length > 0) {
+              receivedAnswerText = true
+            } else if (
+              event.content_block.type === 'server_tool_use' ||
+              event.content_block.type === 'web_search_tool_result' ||
+              event.content_block.type === 'web_fetch_tool_result'
+            ) {
+              receivedToolOrTemplate = true
+            }
+          } else if (
+            event.type === 'content_block_delta' &&
+            event.delta.type === 'text_delta' &&
+            event.delta.text.length > 0
+          ) {
+            receivedAnswerText = true
+          }
           if (
             event.type === 'message_delta' &&
             (event.delta.stop_reason === 'end_turn' || event.delta.stop_reason === 'max_tokens') &&
@@ -1111,6 +1173,18 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             frame ||= requestAnimationFrame(flush)
           }
         }
+        // 部分推理模型偶发在输出完思考后直接以 end_turn 结束而未产出任何正文，触发断流自动重试。
+        const hasTemplate = reply.blocks.some((block) => block.type === 'text' && block.isTemplate)
+        if (
+          !receivedAnswerText &&
+          !receivedToolOrTemplate &&
+          !hasTemplate &&
+          reply.stopReason !== 'refusal' &&
+          reply.stopReason !== 'tool_use' &&
+          reply.stopReason !== 'max_tokens'
+        ) {
+          throw new ApiError('interrupted', '')
+        }
         reply = settleReply(reply, 'done', Date.now())
         break
       } catch (error) {
@@ -1129,21 +1203,50 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         }
         // 附件失效：重新补传后重发。收到过内容块（含丢弃的客户端工具）后不自动重发。
         if (
-          attempt < FILE_RETRY_LIMIT &&
+          fileRetries < FILE_RETRY_LIMIT &&
           !receivedContent &&
           reuploadInvalidatedFiles(sessionId, request, error)
         ) {
-          await waitForRetry(attempt, controller.signal)
+          const retryIndex = fileRetries
+          fileRetries += 1
+          reply = attemptBaseReply
+          flush()
+          await waitForRetry(retryIndex, controller.signal)
           if (controller.signal.aborted) {
             reply = settleReply(reply, 'stopped', Date.now())
             break
           }
           continue
         }
-        if (error instanceof ApiError && error.kind === 'interrupted' && reply.stopReason) {
-          // 已收到 message_delta 的结束原因，只是缺了结尾的 message_stop
+        if (
+          error instanceof ApiError &&
+          error.kind === 'interrupted' &&
+          reply.stopReason &&
+          (receivedAnswerText || reply.stopReason === 'refusal' || reply.stopReason === 'tool_use')
+        ) {
+          // 已收到 message_delta 的结束原因及有效结果，只是缺了结尾的 message_stop
           reply = settleReply(reply, 'done', Date.now())
-        } else if (error instanceof ApiError) {
+          break
+        }
+        // 尚未输出任何正文前发生意外断流、瞬时网络波动或上游繁忙时，自动退避重连，避免思考中途无故停止。
+        if (
+          streamRetries < STREAM_RETRY_LIMIT &&
+          !receivedAnswerText &&
+          !receivedToolOrTemplate &&
+          isRetryableStreamError(error)
+        ) {
+          const retryIndex = streamRetries
+          streamRetries += 1
+          reply = attemptBaseReply
+          flush()
+          await waitForRetry(retryIndex, controller.signal)
+          if (controller.signal.aborted) {
+            reply = settleReply(reply, 'stopped', Date.now())
+            break
+          }
+          continue
+        }
+        if (error instanceof ApiError) {
           reply = settleReply(reply, 'error', Date.now(), {
             kind: error.kind,
             message: error.message,

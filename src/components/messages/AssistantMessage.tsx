@@ -12,6 +12,7 @@ import { TutorQuickChoices, TutorToolCallList } from '../canvas/TutorReplyExtras
 import { ensureApiKey, openSettings } from '../settings/settingsDialogState.js'
 import { IconButton } from '../base/IconButton.js'
 import { Button } from '../base/Button.js'
+import { Tooltip } from '../base/Tooltip.js'
 import { Markdown } from '../markdown/Markdown.js'
 import { SiteThumbnails } from '../search/SiteLogo.js'
 import { toggleSearchPanel, useSearchPanel } from '../search/searchPanelState.js'
@@ -66,6 +67,23 @@ export const AssistantMessage = memo(function AssistantMessage({
     Boolean(parsedTutor && (parsedTutor.toolCalls.length > 0 || parsedTutor.pendingToolLabel))
   const waiting = streaming && view.steps.length === 0 && !view.answer && !message.thinking
   const summaryEntry = `${message.id}-summary`
+  const cacheStats = (() => {
+    const usage = message.usage
+    if (!usage || usage.cache_read_input_tokens <= 0) {
+      return null
+    }
+    const total =
+      usage.input_tokens + usage.cache_creation_input_tokens + usage.cache_read_input_tokens
+    if (total <= 0) {
+      return null
+    }
+    const rate = Math.min(100, Math.round((usage.cache_read_input_tokens / total) * 100))
+    return {
+      rate,
+      cached: usage.cache_read_input_tokens.toLocaleString(),
+      total: total.toLocaleString(),
+    }
+  })()
   return (
     <div className={styles.message}>
       {refused ? null : (
@@ -180,6 +198,19 @@ export const AssistantMessage = memo(function AssistantMessage({
                 regenerateReply(sessionId, message.id)
               }}
             />
+            {cacheStats ? (
+              <Tooltip
+                content={t('cacheHitTooltip', {
+                  cached: cacheStats.cached,
+                  total: cacheStats.total,
+                })}
+                placement="bottom"
+              >
+                <span className={styles.cacheBadge}>
+                  {t('cacheHitRate', { rate: cacheStats.rate })}
+                </span>
+              </Tooltip>
+            ) : null}
           </div>
           {isLast && canContinueReply(message) ? (
             <Button

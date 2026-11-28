@@ -31,6 +31,9 @@ export const describeReply = (reply: AssistantMessage): Notice | null => {
     if (kind === 'network') {
       return { text: translate('commonNetworkErrorToast') }
     }
+    if (kind === 'interrupted') {
+      return { text: message || translate('replyInterrupted') }
+    }
     switch (classifyStatus(status)) {
       case 'unauthorized': {
         const baseMsg = translate('replyInvalidApiKey')
@@ -58,6 +61,9 @@ export const describeReply = (reply: AssistantMessage): Notice | null => {
   if (reply.stopReason === 'refusal') {
     // 导入的拒绝回复优先展示归档中的模板，普通正文仍不可展示。
     return { text: template || translate('replyRefused'), presentation: 'response' }
+  }
+  if (reply.status === 'done' && reply.stopReason === 'max_tokens') {
+    return { text: translate('replyMaxTokens') }
   }
   if (template) {
     return { text: template, presentation: 'response' }

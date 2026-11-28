@@ -1,8 +1,8 @@
 import { ApiError, streamMessage } from '../api/client.js'
 import { readServerSentEvents } from '../api/sse.js'
-import type { MessageStreamEvent } from '../api/types.js'
-import { getContextRounds, getReplyText } from '../chat/reply.js'
-import type { Message, UserMessage } from '../chat/types.js'
+import type { MessageStreamEvent, MessageUsage, StopReason } from '../api/types.js'
+import { appendCanvasContext, getContextRounds, getReplyText } from '../chat/reply.js'
+import type { AssistantMessage, Message, UserMessage } from '../chat/types.js'
 import type { ProviderConfig } from './providers.js'
 
 type SimpleRoleMessage = {
@@ -10,24 +10,73 @@ type SimpleRoleMessage = {
   content: string
 }
 
-const normalizeApiKey = (raw: string): string =>
-  raw.trim().replace(/^Bearer\s+/i, '').trim()
+type CacheControlBlock = {
+  type: 'text'
+  text: string
+  cache_control?: { type: 'ephemeral' }
+}
 
+const CONTINUE_PROMPT =
+  '请紧接你上一条未完成的输出继续生成，不要重复任何已输出的内容，也不要加开场白。'
+
+const normalizeApiKey = (raw: string): string =>
+  raw
+    .trim()
+    .replace(/^Bearer\s+/i, '')
+    .trim()
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const toNonNegativeInt = (value: unknown): number =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.round(value) : 0
+
+/**
+ * 构建前缀完全稳定的多轮消息列表：
+ * - systemPrompt 保持纯静态，不混入动态画板状态；
+ * - 画板实时状态快照仅在首次出现或发生变化时附加到对应轮次的用户消息末尾，并随回复版本固化，
+ *   避免历史轮次发生任何字节偏移，从而最大化各模型服务商的 Prompt KV 缓存命中率；
+ * - 当前轮与历史轮采用完全一致的文本规范化；
+ * - 续写时保留已输出的 assistant 前缀并附加续写指令，既不重复输出也能命中已有缓存前缀。
+ */
 const buildSimpleMessages = (
   systemPrompt: string,
   history: Message[],
-  question: UserMessage
+  question: UserMessage,
+  canvasContext?: string,
+  prefix?: AssistantMessage
 ): SimpleRoleMessage[] => {
   const result: SimpleRoleMessage[] = [{ role: 'system', content: systemPrompt }]
+  let previousCanvasContext: string | undefined
+  const resolveCanvasSnapshot = (snapshot: string | undefined): string | undefined => {
+    if (snapshot && snapshot !== previousCanvasContext) {
+      previousCanvasContext = snapshot
+      return snapshot
+    }
+    return undefined
+  }
   for (const [user, reply] of getContextRounds(history)) {
-    const userText = user.content.trim()
-    const replyText = getReplyText(reply).trim()
-    if (userText && replyText) {
-      result.push({ role: 'user', content: userText })
+    const userBase = user.content.trim()
+    const replyText = getReplyText(reply)
+    if (userBase && replyText.trim()) {
+      const userContent = appendCanvasContext(userBase, resolveCanvasSnapshot(reply.canvasContext))
+      result.push({ role: 'user', content: userContent })
       result.push({ role: 'assistant', content: replyText })
     }
   }
-  result.push({ role: 'user', content: question.content })
+  const currentContent = appendCanvasContext(
+    question.content.trim(),
+    resolveCanvasSnapshot(canvasContext)
+  )
+  result.push({ role: 'user', content: currentContent })
+
+  if (prefix?.prefix) {
+    const partialText = getReplyText(prefix)
+    if (partialText.trim()) {
+      result.push({ role: 'assistant', content: partialText })
+      result.push({ role: 'user', content: CONTINUE_PROMPT })
+    }
+  }
   return result
 }
 
@@ -185,13 +234,12 @@ const extractOpenAiReasoning = (delta: Record<string, unknown> | undefined): str
   if (Array.isArray(delta.reasoning_details)) {
     const parts = delta.reasoning_details
       .map((item) => {
-        if (typeof item === 'object' && item !== null) {
-          const rec = item as Record<string, unknown>
-          if (typeof rec.text === 'string') {
-            return rec.text
+        if (isRecord(item)) {
+          if (typeof item.text === 'string') {
+            return item.text
           }
-          if (typeof rec.summary === 'string') {
-            return rec.summary
+          if (typeof item.summary === 'string') {
+            return item.summary
           }
         }
         return ''
@@ -202,6 +250,108 @@ const extractOpenAiReasoning = (delta: Record<string, unknown> | undefined): str
     }
   }
   return ''
+}
+
+const extractOpenAiContentParts = (
+  content: unknown
+): { kind: 'thinking' | 'text'; text: string }[] => {
+  if (typeof content === 'string') {
+    return content.length > 0 ? [{ kind: 'text', text: content }] : []
+  }
+  if (!Array.isArray(content)) {
+    return []
+  }
+  const pieces: { kind: 'thinking' | 'text'; text: string }[] = []
+  for (const part of content) {
+    if (!isRecord(part)) {
+      continue
+    }
+    const type = typeof part.type === 'string' ? part.type : ''
+    if (type === 'thinking' || type === 'reasoning') {
+      const value =
+        typeof part.thinking === 'string'
+          ? part.thinking
+          : typeof part.text === 'string'
+            ? part.text
+            : ''
+      if (value) {
+        pieces.push({ kind: 'thinking', text: value })
+      }
+    } else if (typeof part.text === 'string' && part.text.length > 0) {
+      pieces.push({ kind: 'text', text: part.text })
+    }
+  }
+  return pieces
+}
+
+const parseOpenAiUsage = (raw: unknown): MessageUsage | undefined => {
+  if (!isRecord(raw)) {
+    return undefined
+  }
+  const promptTokens = toNonNegativeInt(raw.prompt_tokens)
+  const outputTokens = toNonNegativeInt(raw.completion_tokens)
+  const details = isRecord(raw.prompt_tokens_details) ? raw.prompt_tokens_details : undefined
+  const cacheRead =
+    toNonNegativeInt(raw.prompt_cache_hit_tokens) ||
+    toNonNegativeInt(raw.cache_read_input_tokens) ||
+    toNonNegativeInt(details?.cached_tokens)
+  const cacheCreation = toNonNegativeInt(raw.cache_creation_input_tokens)
+  if (promptTokens === 0 && outputTokens === 0 && cacheRead === 0 && cacheCreation === 0) {
+    return undefined
+  }
+  const uncachedInput =
+    typeof raw.prompt_cache_miss_tokens === 'number' &&
+    Number.isFinite(raw.prompt_cache_miss_tokens)
+      ? toNonNegativeInt(raw.prompt_cache_miss_tokens)
+      : Math.max(0, promptTokens - cacheRead - cacheCreation)
+  return {
+    input_tokens: uncachedInput,
+    cache_creation_input_tokens: cacheCreation,
+    cache_read_input_tokens: cacheRead,
+    output_tokens: outputTokens,
+  }
+}
+
+const mapOpenAiFinishReason = (reason: string | null | undefined): StopReason => {
+  if (reason === 'length') {
+    return 'max_tokens'
+  }
+  if (reason === 'content_filter') {
+    return 'refusal'
+  }
+  return 'end_turn'
+}
+
+const isOpenAiReasoningOnlyModel = (modelId: string): boolean =>
+  /(?:^|\/)(?:o1|o3|o4)(?:[-.]|$)/i.test(modelId.trim())
+
+const supportsOpenRouterCacheControl = (provider: ProviderConfig, modelId: string): boolean => {
+  if (provider.id !== 'openrouter') {
+    return false
+  }
+  const lower = modelId.toLowerCase()
+  return lower.includes('claude') || lower.includes('anthropic') || lower.includes('gemini')
+}
+
+const attachOpenRouterCacheControl = (
+  messages: SimpleRoleMessage[]
+): Array<{ role: SimpleRoleMessage['role']; content: string | CacheControlBlock[] }> => {
+  const historyBreakpointIndex = messages.length >= 3 ? messages.length - 2 : -1
+  return messages.map((message, index) => {
+    if (index === 0 || index === historyBreakpointIndex) {
+      return {
+        role: message.role,
+        content: [
+          {
+            type: 'text',
+            text: message.content,
+            cache_control: { type: 'ephemeral' },
+          },
+        ],
+      }
+    }
+    return message
+  })
 }
 
 const buildOpenAiThinkingExtras = (
@@ -226,7 +376,8 @@ const buildOpenAiThinkingExtras = (
 
 /**
  * OpenAI 兼容协议流式请求（兼容 OpenAI / DeepSeek / OpenRouter / 通义千问 / 硅基流动 / 本地 Ollama 等）。
- * 自动解析 reasoning_content / reasoning / reasoning_details / thinking 以及 <think>...</think> 内嵌思维链。
+ * 自动解析 reasoning_content / reasoning / reasoning_details / thinking 以及 <think>...</think> 内嵌思维链，
+ * 并通过稳定前缀、prompt_cache_key、OpenRouter cache_control 与完整断流检测提升缓存命中率与稳定性。
  */
 async function* streamOpenAiCompatible(
   provider: ProviderConfig,
@@ -235,7 +386,10 @@ async function* streamOpenAiCompatible(
   history: Message[],
   question: UserMessage,
   thinking: boolean,
-  signal: AbortSignal
+  signal: AbortSignal,
+  canvasContext?: string,
+  prefix?: AssistantMessage,
+  sessionId?: string
 ): AsyncGenerator<MessageStreamEvent> {
   const urlCandidates = resolveEndpointCandidates(provider.baseUrl, '/chat/completions')
   const headers: Record<string, string> = {
@@ -247,14 +401,34 @@ async function* streamOpenAiCompatible(
     headers.Authorization = `Bearer ${apiKey}`
   }
 
-  const basePayload = {
+  const simpleMessages = buildSimpleMessages(systemPrompt, history, question, canvasContext, prefix)
+  const basePayload: Record<string, unknown> = {
     model: modelId,
-    messages: buildSimpleMessages(systemPrompt, history, question),
+    messages: simpleMessages,
     stream: true,
-    temperature: 0.5,
+    ...(isOpenAiReasoningOnlyModel(modelId) ? {} : { temperature: 0.5 }),
   }
-  const extra = buildOpenAiThinkingExtras(provider, modelId, thinking)
-  const payloadVariants = extra ? [{ ...basePayload, ...extra }, basePayload] : [basePayload]
+  const thinkingExtra = buildOpenAiThinkingExtras(provider, modelId, thinking)
+  const cacheExtras: Record<string, unknown> = {
+    stream_options: { include_usage: true },
+    ...(provider.id === 'openai' && sessionId ? { prompt_cache_key: sessionId } : {}),
+  }
+  const cachedMessages = supportsOpenRouterCacheControl(provider, modelId)
+    ? attachOpenRouterCacheControl(simpleMessages)
+    : simpleMessages
+
+  const payloadVariants: Record<string, unknown>[] = []
+  const primaryPayload: Record<string, unknown> = {
+    ...basePayload,
+    messages: cachedMessages,
+    ...cacheExtras,
+    ...(thinkingExtra ?? {}),
+  }
+  payloadVariants.push(primaryPayload)
+  if (thinkingExtra) {
+    payloadVariants.push({ ...basePayload, ...thinkingExtra })
+  }
+  payloadVariants.push(basePayload)
 
   let response: Response | null = null
   outer: for (let idx = 0; idx < urlCandidates.length; idx += 1) {
@@ -297,22 +471,21 @@ async function* streamOpenAiCompatible(
     throw new ApiError('protocol', '服务端未返回可读的流式响应体')
   }
 
-  yield {
-    type: 'message_start',
-    message: { id: `openai-${Date.now()}`, model: modelId },
-  }
-
   let nextBlockIndex = 0
   let thinkingIndex: number | null = null
   let thinkingClosed = false
   let textIndex: number | null = null
-  let stopReason: 'end_turn' | 'max_tokens' = 'end_turn'
+  let hasThinking = false
+  let hasText = false
+  let stopReason: StopReason = 'end_turn'
+  let latestUsage: MessageUsage | undefined
   const splitter = createThinkTagSplitter()
 
   const emitThinking = function* (chunkText: string): Generator<MessageStreamEvent> {
     if (!chunkText) {
       return
     }
+    hasThinking = true
     if (thinkingIndex === null || thinkingClosed) {
       thinkingIndex = nextBlockIndex++
       thinkingClosed = false
@@ -333,6 +506,7 @@ async function* streamOpenAiCompatible(
     if (!chunkText) {
       return
     }
+    hasText = true
     if (thinkingIndex !== null && !thinkingClosed) {
       yield { type: 'content_block_stop', index: thinkingIndex }
       thinkingClosed = true
@@ -352,47 +526,151 @@ async function* streamOpenAiCompatible(
     }
   }
 
-  for await (const { data } of readServerSentEvents(response.body, signal)) {
-    const trimmed = data.trim()
-    if (!trimmed || trimmed === '[DONE]') {
-      continue
-    }
-    let chunk: {
-      choices?: {
-        delta?: Record<string, unknown>
-        finish_reason?: string | null
-      }[]
+  // 兼容部分中转站以 HTTP 200 + application/json 返回错误或非流式完整结果
+  const contentType = (response.headers.get('Content-Type') ?? '').toLowerCase()
+  if (contentType.includes('application/json') && !contentType.includes('text/event-stream')) {
+    const rawText = await response.text().catch(() => '')
+    let json: {
+      choices?: { message?: Record<string, unknown>; finish_reason?: string | null }[]
+      usage?: unknown
       error?: { message?: string }
+      message?: string
     }
     try {
-      chunk = JSON.parse(trimmed) as typeof chunk
+      json = JSON.parse(rawText) as typeof json
     } catch {
-      continue
+      throw new ApiError('protocol', rawText || '服务端返回了非流式异常响应')
     }
-    if (chunk.error?.message) {
-      throw new ApiError('stream', chunk.error.message)
+    if (json.error?.message) {
+      throw new ApiError('stream', json.error.message)
     }
-    const choice = chunk.choices?.[0]
-    if (!choice) {
-      continue
+    const choice = json.choices?.[0]
+    if (!choice?.message) {
+      throw new ApiError('stream', json.message || '服务端未返回有效回复')
     }
-    if (choice.finish_reason === 'length') {
-      stopReason = 'max_tokens'
+    latestUsage = parseOpenAiUsage(json.usage)
+    yield {
+      type: 'message_start',
+      message: { id: `openai-${Date.now()}`, model: modelId, usage: latestUsage },
     }
-    const reasoning = extractOpenAiReasoning(choice.delta)
+    const reasoning = extractOpenAiReasoning(choice.message)
     if (reasoning) {
       yield* emitThinking(reasoning)
     }
-    const content = choice.delta?.content
-    if (typeof content === 'string' && content.length > 0) {
-      for (const piece of splitter.push(content)) {
-        if (piece.kind === 'thinking') {
-          yield* emitThinking(piece.text)
-        } else {
-          yield* emitText(piece.text)
+    for (const part of extractOpenAiContentParts(choice.message.content)) {
+      if (part.kind === 'thinking') {
+        yield* emitThinking(part.text)
+      } else {
+        for (const piece of splitter.push(part.text)) {
+          if (piece.kind === 'thinking') {
+            yield* emitThinking(piece.text)
+          } else {
+            yield* emitText(piece.text)
+          }
         }
       }
     }
+    for (const piece of splitter.flush()) {
+      if (piece.kind === 'thinking') {
+        yield* emitThinking(piece.text)
+      } else {
+        yield* emitText(piece.text)
+      }
+    }
+    if (thinkingIndex !== null && !thinkingClosed) {
+      yield { type: 'content_block_stop', index: thinkingIndex }
+    }
+    if (textIndex !== null) {
+      yield { type: 'content_block_stop', index: textIndex }
+    }
+    stopReason = mapOpenAiFinishReason(choice.finish_reason)
+    if (!hasThinking && !hasText && stopReason !== 'refusal') {
+      throw new ApiError('interrupted', '')
+    }
+    yield {
+      type: 'message_delta',
+      delta: { stop_reason: stopReason, stop_sequence: null },
+      usage: latestUsage,
+    }
+    yield { type: 'message_stop' }
+    return
+  }
+
+  yield {
+    type: 'message_start',
+    message: { id: `openai-${Date.now()}`, model: modelId },
+  }
+
+  let receivedDone = false
+  let receivedFinishReason: string | null = null
+
+  try {
+    for await (const { event: eventName, data } of readServerSentEvents(response.body, signal)) {
+      const trimmed = data.trim()
+      if (!trimmed) {
+        continue
+      }
+      if (trimmed === '[DONE]') {
+        receivedDone = true
+        break
+      }
+      let chunk: {
+        choices?: {
+          delta?: Record<string, unknown>
+          finish_reason?: string | null
+        }[]
+        usage?: unknown
+        error?: { message?: string }
+      }
+      try {
+        chunk = JSON.parse(trimmed) as typeof chunk
+      } catch {
+        if (eventName === 'error') {
+          throw new ApiError('stream', trimmed)
+        }
+        continue
+      }
+      if (chunk.error?.message) {
+        throw new ApiError('stream', chunk.error.message)
+      }
+      if (eventName === 'error') {
+        throw new ApiError('stream', trimmed)
+      }
+      const parsedUsage = parseOpenAiUsage(chunk.usage)
+      if (parsedUsage) {
+        latestUsage = parsedUsage
+      }
+      const choice = chunk.choices?.[0]
+      if (!choice) {
+        continue
+      }
+      if (typeof choice.finish_reason === 'string' && choice.finish_reason.length > 0) {
+        receivedFinishReason = choice.finish_reason
+        stopReason = mapOpenAiFinishReason(choice.finish_reason)
+      }
+      const reasoning = extractOpenAiReasoning(choice.delta)
+      if (reasoning) {
+        yield* emitThinking(reasoning)
+      }
+      for (const part of extractOpenAiContentParts(choice.delta?.content)) {
+        if (part.kind === 'thinking') {
+          yield* emitThinking(part.text)
+        } else {
+          for (const piece of splitter.push(part.text)) {
+            if (piece.kind === 'thinking') {
+              yield* emitThinking(piece.text)
+            } else {
+              yield* emitText(piece.text)
+            }
+          }
+        }
+      }
+    }
+  } catch (error) {
+    if (signal.aborted || error instanceof ApiError) {
+      throw error
+    }
+    throw new ApiError('interrupted', error instanceof Error ? error.message : String(error))
   }
 
   for (const piece of splitter.flush()) {
@@ -409,15 +687,63 @@ async function* streamOpenAiCompatible(
   if (textIndex !== null) {
     yield { type: 'content_block_stop', index: textIndex }
   }
+
+  // 未收到 [DONE] 且未收到任何 finish_reason 说明底层流异常断开，不能伪装成正常完成
+  if (!receivedDone && !receivedFinishReason) {
+    throw new ApiError('interrupted', '')
+  }
+  if (!hasThinking && !hasText && stopReason !== 'refusal') {
+    throw new ApiError('interrupted', '')
+  }
+
   yield {
     type: 'message_delta',
     delta: { stop_reason: stopReason, stop_sequence: null },
+    usage: latestUsage,
   }
   yield { type: 'message_stop' }
 }
 
+const parseAnthropicUsage = (raw: unknown, previous?: MessageUsage): MessageUsage | undefined => {
+  if (!isRecord(raw)) {
+    return previous
+  }
+  const hasInput = typeof raw.input_tokens === 'number'
+  const hasCacheCreate = typeof raw.cache_creation_input_tokens === 'number'
+  const hasCacheRead = typeof raw.cache_read_input_tokens === 'number'
+  const hasOutput = typeof raw.output_tokens === 'number'
+  if (!hasInput && !hasCacheCreate && !hasCacheRead && !hasOutput) {
+    return previous
+  }
+  return {
+    input_tokens: hasInput ? toNonNegativeInt(raw.input_tokens) : (previous?.input_tokens ?? 0),
+    cache_creation_input_tokens: hasCacheCreate
+      ? toNonNegativeInt(raw.cache_creation_input_tokens)
+      : (previous?.cache_creation_input_tokens ?? 0),
+    cache_read_input_tokens: hasCacheRead
+      ? toNonNegativeInt(raw.cache_read_input_tokens)
+      : (previous?.cache_read_input_tokens ?? 0),
+    output_tokens: hasOutput ? toNonNegativeInt(raw.output_tokens) : (previous?.output_tokens ?? 0),
+  }
+}
+
+const mapAnthropicStopReason = (reason: string | undefined): StopReason => {
+  if (reason === 'max_tokens') {
+    return 'max_tokens'
+  }
+  if (reason === 'refusal') {
+    return 'refusal'
+  }
+  if (reason === 'tool_use') {
+    return 'tool_use'
+  }
+  return 'end_turn'
+}
+
 /**
  * 标准 Anthropic Messages API 流式请求（兼容 Claude 官方接口与 OneAPI/NewAPI 等 Bearer 鉴权代理）。
+ * 自动为静态 system prompt 和历史最后一轮注入 ephemeral cache_control 断点以启用 Prompt Caching，
+ * 并在第三方代理不支持时自动降级回普通格式。
  */
 async function* streamAnthropicStandard(
   provider: ProviderConfig,
@@ -426,25 +752,71 @@ async function* streamAnthropicStandard(
   history: Message[],
   question: UserMessage,
   thinking: boolean,
-  signal: AbortSignal
+  signal: AbortSignal,
+  canvasContext?: string,
+  prefix?: AssistantMessage
 ): AsyncGenerator<MessageStreamEvent> {
   const urlCandidates = resolveEndpointCandidates(provider.baseUrl, '/messages')
-  const messages = buildSimpleMessages(systemPrompt, history, question)
+  const plainMessages = buildSimpleMessages(systemPrompt, history, question, canvasContext, prefix)
     .filter((m) => m.role !== 'system')
     .map((m) => ({ role: m.role, content: m.content }))
 
-  const baseBody: Record<string, unknown> = {
+  const historyBreakpointIndex = plainMessages.length >= 2 ? plainMessages.length - 2 : -1
+  const cachedMessages = plainMessages.map((m, index) =>
+    index === historyBreakpointIndex
+      ? {
+          role: m.role,
+          content: [
+            {
+              type: 'text' as const,
+              text: m.content,
+              cache_control: { type: 'ephemeral' as const },
+            },
+          ],
+        }
+      : m
+  )
+  const cachedSystem: CacheControlBlock[] = [
+    {
+      type: 'text',
+      text: systemPrompt,
+      cache_control: { type: 'ephemeral' },
+    },
+  ]
+
+  const cachedBase: Record<string, unknown> = {
     model: modelId,
-    max_tokens: thinking ? 8192 : 4096,
-    system: systemPrompt,
-    messages,
+    max_tokens: 8192,
+    system: cachedSystem,
+    messages: cachedMessages,
     stream: true,
   }
-  const payloadVariants: Record<string, unknown>[] = thinking
-    ? [{ ...baseBody, thinking: { type: 'enabled', budget_tokens: 2048 } }, baseBody]
-    : [baseBody]
-  const apiKey = normalizeApiKey(provider.apiKey)
+  const plainFallback: Record<string, unknown> = {
+    model: modelId,
+    max_tokens: 4096,
+    system: systemPrompt,
+    messages: plainMessages,
+    stream: true,
+  }
 
+  const payloadVariants: Record<string, unknown>[] = thinking
+    ? [
+        {
+          ...cachedBase,
+          max_tokens: 16384,
+          thinking: { type: 'enabled', budget_tokens: 8192 },
+        },
+        {
+          ...cachedBase,
+          max_tokens: 8192,
+          thinking: { type: 'enabled', budget_tokens: 2048 },
+        },
+        cachedBase,
+        plainFallback,
+      ]
+    : [cachedBase, plainFallback]
+
+  const apiKey = normalizeApiKey(provider.apiKey)
   const headerVariants: Record<string, string>[] = [
     {
       'Content-Type': 'application/json',
@@ -482,10 +854,16 @@ async function* streamAnthropicStandard(
           if (attempt.status === 400 && pIdx + 1 < payloadVariants.length) {
             continue
           }
-          if ((attempt.status === 401 || attempt.status === 403) && hIdx + 1 < headerVariants.length) {
+          if (
+            (attempt.status === 401 || attempt.status === 403) &&
+            hIdx + 1 < headerVariants.length
+          ) {
             break
           }
-          if ((attempt.status === 404 || attempt.status === 405) && uIdx + 1 < urlCandidates.length) {
+          if (
+            (attempt.status === 404 || attempt.status === 405) &&
+            uIdx + 1 < urlCandidates.length
+          ) {
             continue outer
           }
           response = attempt
@@ -513,83 +891,268 @@ async function* streamAnthropicStandard(
     throw new ApiError('protocol', '服务端未返回流式响应')
   }
 
+  // 兼容非流式 JSON 错误或完整返回
+  const contentType = (response.headers.get('Content-Type') ?? '').toLowerCase()
+  if (contentType.includes('application/json') && !contentType.includes('text/event-stream')) {
+    const rawText = await response.text().catch(() => '')
+    let json: {
+      content?: { type?: string; text?: string; thinking?: string; signature?: string }[]
+      stop_reason?: string
+      usage?: unknown
+      error?: { message?: string }
+      message?: string
+    }
+    try {
+      json = JSON.parse(rawText) as typeof json
+    } catch {
+      throw new ApiError('protocol', rawText || 'Anthropic 返回了非流式异常响应')
+    }
+    if (json.error?.message) {
+      throw new ApiError('stream', json.error.message)
+    }
+    if (!Array.isArray(json.content)) {
+      throw new ApiError('stream', json.message || 'Anthropic 未返回有效回复')
+    }
+    const usage = parseAnthropicUsage(json.usage)
+    yield {
+      type: 'message_start',
+      message: { id: `anthropic-${Date.now()}`, model: modelId, usage },
+    }
+    let idx = 0
+    for (const block of json.content) {
+      if (block.type === 'thinking' && typeof block.thinking === 'string') {
+        const mapped = idx++
+        yield {
+          type: 'content_block_start',
+          index: mapped,
+          content_block: {
+            type: 'thinking',
+            thinking: block.thinking,
+            signature: block.signature ?? '',
+          },
+        }
+        yield { type: 'content_block_stop', index: mapped }
+      } else if (block.type === 'text' && typeof block.text === 'string') {
+        const mapped = idx++
+        yield {
+          type: 'content_block_start',
+          index: mapped,
+          content_block: { type: 'text', text: block.text },
+        }
+        yield { type: 'content_block_stop', index: mapped }
+      }
+    }
+    const stopReason = mapAnthropicStopReason(json.stop_reason)
+    if (idx === 0 && stopReason !== 'refusal' && stopReason !== 'tool_use') {
+      throw new ApiError('interrupted', '')
+    }
+    yield {
+      type: 'message_delta',
+      delta: { stop_reason: stopReason, stop_sequence: null },
+      usage,
+    }
+    yield { type: 'message_stop' }
+    return
+  }
+
   yield {
     type: 'message_start',
     message: { id: `anthropic-${Date.now()}`, model: modelId },
   }
 
   const indexMap = new Map<number, number>()
+  const openMappedIndexes = new Set<number>()
   let nextIdx = 0
-  let stopReason: 'end_turn' | 'max_tokens' = 'end_turn'
+  let stopReason: StopReason = 'end_turn'
+  let receivedStopReason = false
+  let receivedMessageStop = false
+  let hasThinking = false
+  let hasText = false
+  let latestUsage: MessageUsage | undefined
 
-  for await (const { data } of readServerSentEvents(response.body, signal)) {
-    let payload: {
-      type?: string
-      index?: number
-      content_block?: { type?: string; text?: string; thinking?: string }
-      delta?: { type?: string; text?: string; thinking?: string; stop_reason?: string }
-      error?: { message?: string }
-    }
-    try {
-      payload = JSON.parse(data) as typeof payload
-    } catch {
-      continue
-    }
-    if (payload.error?.message) {
-      throw new ApiError('stream', payload.error.message)
-    }
-    if (payload.type === 'content_block_start' && typeof payload.index === 'number') {
-      const kind = payload.content_block?.type
-      if (kind === 'thinking' || kind === 'text') {
-        const mapped = nextIdx++
-        indexMap.set(payload.index, mapped)
-        yield {
-          type: 'content_block_start',
-          index: mapped,
-          content_block:
-            kind === 'thinking'
-              ? { type: 'thinking', thinking: payload.content_block?.thinking ?? '', signature: '' }
-              : { type: 'text', text: payload.content_block?.text ?? '' },
+  try {
+    for await (const { event: eventName, data } of readServerSentEvents(response.body, signal)) {
+      let payload: {
+        type?: string
+        index?: number
+        message?: { usage?: unknown }
+        content_block?: { type?: string; text?: string; thinking?: string; signature?: string }
+        delta?: {
+          type?: string
+          text?: string
+          thinking?: string
+          signature?: string
+          stop_reason?: string
         }
+        usage?: unknown
+        error?: { message?: string }
       }
-    } else if (payload.type === 'content_block_delta' && typeof payload.index === 'number') {
-      const mapped = indexMap.get(payload.index)
-      if (mapped === undefined || !payload.delta) {
+      try {
+        payload = JSON.parse(data) as typeof payload
+      } catch {
+        if (eventName === 'error') {
+          throw new ApiError('stream', data)
+        }
         continue
       }
-      if (payload.delta.type === 'thinking_delta' && typeof payload.delta.thinking === 'string') {
-        yield {
-          type: 'content_block_delta',
-          index: mapped,
-          delta: { type: 'thinking_delta', thinking: payload.delta.thinking },
-        }
-      } else if (payload.delta.type === 'text_delta' && typeof payload.delta.text === 'string') {
-        yield {
-          type: 'content_block_delta',
-          index: mapped,
-          delta: { type: 'text_delta', text: payload.delta.text },
-        }
+      if (payload.error?.message) {
+        throw new ApiError('stream', payload.error.message)
       }
-    } else if (payload.type === 'content_block_stop' && typeof payload.index === 'number') {
-      const mapped = indexMap.get(payload.index)
-      if (mapped !== undefined) {
-        yield { type: 'content_block_stop', index: mapped }
+      if (eventName === 'error') {
+        throw new ApiError('stream', data)
       }
-    } else if (payload.type === 'message_delta' && payload.delta?.stop_reason === 'max_tokens') {
-      stopReason = 'max_tokens'
+      if (payload.type === 'message_start') {
+        latestUsage = parseAnthropicUsage(payload.message?.usage, latestUsage)
+        if (latestUsage) {
+          yield {
+            type: 'message_start',
+            message: { id: `anthropic-${Date.now()}`, model: modelId, usage: latestUsage },
+          }
+        }
+      } else if (payload.type === 'content_block_start' && typeof payload.index === 'number') {
+        const kind = payload.content_block?.type
+        if (kind === 'thinking' || kind === 'text') {
+          const mapped = nextIdx++
+          indexMap.set(payload.index, mapped)
+          openMappedIndexes.add(mapped)
+          if (kind === 'thinking' && payload.content_block?.thinking) {
+            hasThinking = true
+          }
+          if (kind === 'text' && payload.content_block?.text) {
+            hasText = true
+          }
+          yield {
+            type: 'content_block_start',
+            index: mapped,
+            content_block:
+              kind === 'thinking'
+                ? {
+                    type: 'thinking',
+                    thinking: payload.content_block?.thinking ?? '',
+                    signature: payload.content_block?.signature ?? '',
+                  }
+                : { type: 'text', text: payload.content_block?.text ?? '' },
+          }
+        }
+      } else if (payload.type === 'content_block_delta' && typeof payload.index === 'number') {
+        const mapped = indexMap.get(payload.index)
+        if (mapped === undefined || !payload.delta) {
+          continue
+        }
+        if (payload.delta.type === 'thinking_delta' && typeof payload.delta.thinking === 'string') {
+          if (payload.delta.thinking.length > 0) {
+            hasThinking = true
+          }
+          yield {
+            type: 'content_block_delta',
+            index: mapped,
+            delta: { type: 'thinking_delta', thinking: payload.delta.thinking },
+          }
+        } else if (
+          payload.delta.type === 'signature_delta' &&
+          typeof payload.delta.signature === 'string'
+        ) {
+          yield {
+            type: 'content_block_delta',
+            index: mapped,
+            delta: { type: 'signature_delta', signature: payload.delta.signature },
+          }
+        } else if (payload.delta.type === 'text_delta' && typeof payload.delta.text === 'string') {
+          if (payload.delta.text.length > 0) {
+            hasText = true
+          }
+          yield {
+            type: 'content_block_delta',
+            index: mapped,
+            delta: { type: 'text_delta', text: payload.delta.text },
+          }
+        }
+      } else if (payload.type === 'content_block_stop' && typeof payload.index === 'number') {
+        const mapped = indexMap.get(payload.index)
+        if (mapped !== undefined && openMappedIndexes.has(mapped)) {
+          openMappedIndexes.delete(mapped)
+          yield { type: 'content_block_stop', index: mapped }
+        }
+      } else if (payload.type === 'message_delta') {
+        latestUsage = parseAnthropicUsage(payload.usage, latestUsage)
+        if (
+          typeof payload.delta?.stop_reason === 'string' &&
+          payload.delta.stop_reason.length > 0
+        ) {
+          receivedStopReason = true
+          stopReason = mapAnthropicStopReason(payload.delta.stop_reason)
+        }
+      } else if (payload.type === 'message_stop') {
+        receivedMessageStop = true
+        break
+      }
     }
+  } catch (error) {
+    if (signal.aborted || error instanceof ApiError) {
+      throw error
+    }
+    throw new ApiError('interrupted', error instanceof Error ? error.message : String(error))
+  }
+
+  for (const mapped of openMappedIndexes) {
+    yield { type: 'content_block_stop', index: mapped }
+  }
+
+  if (!receivedMessageStop && !receivedStopReason) {
+    throw new ApiError('interrupted', '')
+  }
+  if (!hasThinking && !hasText && stopReason !== 'refusal' && stopReason !== 'tool_use') {
+    throw new ApiError('interrupted', '')
   }
 
   yield {
     type: 'message_delta',
     delta: { stop_reason: stopReason, stop_sequence: null },
+    usage: latestUsage,
   }
   yield { type: 'message_stop' }
 }
 
+const parseGeminiUsage = (raw: unknown): MessageUsage | undefined => {
+  if (!isRecord(raw)) {
+    return undefined
+  }
+  const promptTokens = toNonNegativeInt(raw.promptTokenCount)
+  const cachedTokens = toNonNegativeInt(raw.cachedContentTokenCount)
+  const candidatesTokens = toNonNegativeInt(raw.candidatesTokenCount)
+  const thoughtsTokens = toNonNegativeInt(raw.thoughtsTokenCount)
+  const outputTokens = candidatesTokens + thoughtsTokens
+  if (promptTokens === 0 && cachedTokens === 0 && outputTokens === 0) {
+    return undefined
+  }
+  return {
+    input_tokens: Math.max(0, promptTokens - cachedTokens),
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: cachedTokens,
+    output_tokens: outputTokens,
+  }
+}
+
+const mapGeminiFinishReason = (reason: string | undefined): StopReason => {
+  if (reason === 'MAX_TOKENS') {
+    return 'max_tokens'
+  }
+  if (
+    reason === 'SAFETY' ||
+    reason === 'RECITATION' ||
+    reason === 'PROHIBITED_CONTENT' ||
+    reason === 'BLOCKLIST' ||
+    reason === 'SPII'
+  ) {
+    return 'refusal'
+  }
+  return 'end_turn'
+}
+
 /**
  * Google Gemini 原生 REST SSE 流式接口（streamGenerateContent?alt=sse）。
- * 支持 thinkingConfig.includeThoughts 开启思维链并分离 part.thought 输出。
+ * 支持 thinkingConfig.includeThoughts 开启思维链并分离 part.thought 输出；
+ * 保持 systemInstruction 纯静态与历史前缀稳定，自动触发 Gemini 隐式上下文缓存。
  */
 async function* streamGemini(
   provider: ProviderConfig,
@@ -598,7 +1161,9 @@ async function* streamGemini(
   history: Message[],
   question: UserMessage,
   thinking: boolean,
-  signal: AbortSignal
+  signal: AbortSignal,
+  canvasContext?: string,
+  prefix?: AssistantMessage
 ): AsyncGenerator<MessageStreamEvent> {
   const rawBase = provider.baseUrl
     .trim()
@@ -609,7 +1174,7 @@ async function* streamGemini(
     baseCandidates.push(`${rawBase}/v1beta`)
   }
   const apiKey = normalizeApiKey(provider.apiKey)
-  const contents = buildSimpleMessages(systemPrompt, history, question)
+  const contents = buildSimpleMessages(systemPrompt, history, question, canvasContext, prefix)
     .filter((m) => m.role !== 'system')
     .map((m) => ({
       role: m.role === 'assistant' ? 'model' : 'user',
@@ -673,7 +1238,10 @@ async function* streamGemini(
           if ((attempt.status === 401 || attempt.status === 403) && aIdx + 1 < attempts.length) {
             break
           }
-          if ((attempt.status === 404 || attempt.status === 405) && bIdx + 1 < baseCandidates.length) {
+          if (
+            (attempt.status === 404 || attempt.status === 405) &&
+            bIdx + 1 < baseCandidates.length
+          ) {
             continue outer
           }
           response = attempt
@@ -701,79 +1269,179 @@ async function* streamGemini(
     throw new ApiError('protocol', 'Gemini 未返回流式响应')
   }
 
-  yield {
-    type: 'message_start',
-    message: { id: `gemini-${Date.now()}`, model: modelId },
+  const state: {
+    nextIdx: number
+    thinkingIdx: number | null
+    thinkingClosed: boolean
+    textIdx: number | null
+    hasThinking: boolean
+    hasText: boolean
+    stopReason: StopReason
+    receivedFinishReason: boolean
+    latestUsage: MessageUsage | undefined
+  } = {
+    nextIdx: 0,
+    thinkingIdx: null,
+    thinkingClosed: false,
+    textIdx: null,
+    hasThinking: false,
+    hasText: false,
+    stopReason: 'end_turn',
+    receivedFinishReason: false,
+    latestUsage: undefined,
   }
 
-  let nextIdx = 0
-  let thinkingIdx: number | null = null
-  let thinkingClosed = false
-  let textIdx: number | null = null
-
-  for await (const { data } of readServerSentEvents(response.body, signal)) {
-    let payload: {
-      candidates?: { content?: { parts?: { text?: string; thought?: boolean }[] } }[]
-      error?: { message?: string }
-    }
-    try {
-      payload = JSON.parse(data) as typeof payload
-    } catch {
-      continue
-    }
+  const emitGeminiPayload = function* (payload: {
+    candidates?: {
+      content?: { parts?: { text?: string; thought?: boolean }[] }
+      finishReason?: string
+    }[]
+    usageMetadata?: unknown
+    error?: { message?: string }
+  }): Generator<MessageStreamEvent> {
     if (payload.error?.message) {
       throw new ApiError('stream', payload.error.message)
     }
-    const parts = payload.candidates?.[0]?.content?.parts ?? []
+    const parsedUsage = parseGeminiUsage(payload.usageMetadata)
+    if (parsedUsage) {
+      state.latestUsage = parsedUsage
+    }
+    const candidate = payload.candidates?.[0]
+    if (!candidate) {
+      return
+    }
+    if (typeof candidate.finishReason === 'string' && candidate.finishReason.length > 0) {
+      state.receivedFinishReason = true
+      state.stopReason = mapGeminiFinishReason(candidate.finishReason)
+    }
+    const parts = candidate.content?.parts ?? []
     for (const part of parts) {
       if (typeof part.text !== 'string' || part.text.length === 0) {
         continue
       }
       if (part.thought) {
-        if (thinkingIdx === null) {
-          thinkingIdx = nextIdx++
+        state.hasThinking = true
+        if (state.thinkingIdx === null || state.thinkingClosed) {
+          state.thinkingIdx = state.nextIdx++
+          state.thinkingClosed = false
           yield {
             type: 'content_block_start',
-            index: thinkingIdx,
+            index: state.thinkingIdx,
             content_block: { type: 'thinking', thinking: '', signature: '' },
           }
         }
         yield {
           type: 'content_block_delta',
-          index: thinkingIdx,
+          index: state.thinkingIdx,
           delta: { type: 'thinking_delta', thinking: part.text },
         }
       } else {
-        if (thinkingIdx !== null && !thinkingClosed) {
-          yield { type: 'content_block_stop', index: thinkingIdx }
-          thinkingClosed = true
+        state.hasText = true
+        if (state.thinkingIdx !== null && !state.thinkingClosed) {
+          yield { type: 'content_block_stop', index: state.thinkingIdx }
+          state.thinkingClosed = true
         }
-        if (textIdx === null) {
-          textIdx = nextIdx++
+        if (state.textIdx === null) {
+          state.textIdx = state.nextIdx++
           yield {
             type: 'content_block_start',
-            index: textIdx,
+            index: state.textIdx,
             content_block: { type: 'text', text: '' },
           }
         }
         yield {
           type: 'content_block_delta',
-          index: textIdx,
+          index: state.textIdx,
           delta: { type: 'text_delta', text: part.text },
         }
       }
     }
   }
 
-  if (thinkingIdx !== null && !thinkingClosed) {
-    yield { type: 'content_block_stop', index: thinkingIdx }
+  // 兼容非流式 JSON 返回
+  const contentType = (response.headers.get('Content-Type') ?? '').toLowerCase()
+  if (contentType.includes('application/json') && !contentType.includes('text/event-stream')) {
+    const rawText = await response.text().catch(() => '')
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(rawText)
+    } catch {
+      throw new ApiError('protocol', rawText || 'Gemini 返回了非流式异常响应')
+    }
+    yield {
+      type: 'message_start',
+      message: { id: `gemini-${Date.now()}`, model: modelId },
+    }
+    const list = Array.isArray(parsed) ? parsed : [parsed]
+    for (const item of list) {
+      if (isRecord(item)) {
+        yield* emitGeminiPayload(item as Parameters<typeof emitGeminiPayload>[0])
+      }
+    }
+    if (state.thinkingIdx !== null && !state.thinkingClosed) {
+      yield { type: 'content_block_stop', index: state.thinkingIdx }
+    }
+    if (state.textIdx !== null) {
+      yield { type: 'content_block_stop', index: state.textIdx }
+    }
+    if (!state.hasThinking && !state.hasText && state.stopReason !== 'refusal') {
+      throw new ApiError('interrupted', '')
+    }
+    yield {
+      type: 'message_delta',
+      delta: { stop_reason: state.stopReason, stop_sequence: null },
+      usage: state.latestUsage,
+    }
+    yield { type: 'message_stop' }
+    return
   }
-  if (textIdx !== null) {
-    yield { type: 'content_block_stop', index: textIdx }
+
+  yield {
+    type: 'message_start',
+    message: { id: `gemini-${Date.now()}`, model: modelId },
   }
+
+  try {
+    for await (const { event: eventName, data } of readServerSentEvents(response.body, signal)) {
+      let payload: Parameters<typeof emitGeminiPayload>[0]
+      try {
+        payload = JSON.parse(data) as Parameters<typeof emitGeminiPayload>[0]
+      } catch {
+        if (eventName === 'error') {
+          throw new ApiError('stream', data)
+        }
+        continue
+      }
+      if (eventName === 'error' && !payload.error?.message) {
+        throw new ApiError('stream', data)
+      }
+      yield* emitGeminiPayload(payload)
+    }
+  } catch (error) {
+    if (signal.aborted || error instanceof ApiError) {
+      throw error
+    }
+    throw new ApiError('interrupted', error instanceof Error ? error.message : String(error))
+  }
+
+  if (state.thinkingIdx !== null && !state.thinkingClosed) {
+    yield { type: 'content_block_stop', index: state.thinkingIdx }
+  }
+  if (state.textIdx !== null) {
+    yield { type: 'content_block_stop', index: state.textIdx }
+  }
+
+  if (!state.receivedFinishReason) {
+    throw new ApiError('interrupted', '')
+  }
+  if (!state.hasThinking && !state.hasText && state.stopReason !== 'refusal') {
+    throw new ApiError('interrupted', '')
+  }
+
   yield {
     type: 'message_delta',
-    delta: { stop_reason: 'end_turn', stop_sequence: null },
+    delta: { stop_reason: state.stopReason, stop_sequence: null },
+    usage: state.latestUsage,
   }
   yield { type: 'message_stop' }
 }
@@ -787,8 +1455,22 @@ export function streamMultiProviderMessage(options: {
   question: UserMessage
   thinking: boolean
   signal: AbortSignal
+  canvasContext?: string
+  prefix?: AssistantMessage
+  sessionId?: string
 }): AsyncGenerator<MessageStreamEvent> {
-  const { provider, modelId, systemPrompt, history, question, thinking, signal } = options
+  const {
+    provider,
+    modelId,
+    systemPrompt,
+    history,
+    question,
+    thinking,
+    signal,
+    canvasContext,
+    prefix,
+    sessionId,
+  } = options
   if (provider.protocol === 'anthropic') {
     return streamAnthropicStandard(
       provider,
@@ -797,11 +1479,23 @@ export function streamMultiProviderMessage(options: {
       history,
       question,
       thinking,
-      signal
+      signal,
+      canvasContext,
+      prefix
     )
   }
   if (provider.protocol === 'gemini') {
-    return streamGemini(provider, modelId, systemPrompt, history, question, thinking, signal)
+    return streamGemini(
+      provider,
+      modelId,
+      systemPrompt,
+      history,
+      question,
+      thinking,
+      signal,
+      canvasContext,
+      prefix
+    )
   }
   return streamOpenAiCompatible(
     provider,
@@ -810,7 +1504,10 @@ export function streamMultiProviderMessage(options: {
     history,
     question,
     thinking,
-    signal
+    signal,
+    canvasContext,
+    prefix,
+    sessionId
   )
 }
 

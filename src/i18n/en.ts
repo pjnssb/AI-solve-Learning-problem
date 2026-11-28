@@ -84,6 +84,11 @@ export const en = {
   completionServerBusyToast: 'Server busy, please try again later.',
   unknownError: 'Unknown error',
   replyRefused: "Sorry, that's beyond my current scope. Let's talk about something else.",
+  replyInterrupted:
+    'Connection interrupted before the reply finished. You can click Continue or regenerate.',
+  replyMaxTokens: 'Output length limit reached. Click Continue to finish the response.',
+  cacheHitRate: 'Cache {rate}%',
+  cacheHitTooltip: 'Prompt cache hit {cached} / {total} tokens',
   messageThinkDuration: 'Thought for {count} second',
   messageThinkDurationPlural: 'Thought for {count} seconds',
   messageThinkStopped: 'Stopped',

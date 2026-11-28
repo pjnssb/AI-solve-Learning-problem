@@ -205,23 +205,26 @@ export const readMessageEvent = (value: unknown): MessageStreamEvent | null => {
         return null
       }
       break
-    case 'message_delta':
-      if (
-        !isRecord(value.delta) ||
-        !['end_turn', 'max_tokens', 'tool_use', 'refusal'].includes(
-          value.delta.stop_reason as string
-        )
-      ) {
+    case 'message_delta': {
+      if (!isRecord(value.delta)) {
+        return null
+      }
+      const rawStopReason = value.delta.stop_reason
+      const normalizedStopReason =
+        rawStopReason === 'stop_sequence' ? 'end_turn' : (rawStopReason as string)
+      if (!['end_turn', 'max_tokens', 'tool_use', 'refusal'].includes(normalizedStopReason)) {
         return null
       }
       return {
         ...value,
         delta: {
           ...value.delta,
+          stop_reason: normalizedStopReason,
           title: isOptionalString(value.delta.title) ? value.delta.title : undefined,
         },
         usage: isUsage(value.usage) ? value.usage : undefined,
       } as MessageStreamEvent
+    }
     case 'message_stop':
       break
     default:

@@ -104,6 +104,18 @@
   opacity: 1;
 }
 
+.cacheBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 16px;
+  user-select: none;
+}
+
 .continueButton {
   margin-left: auto;
 }

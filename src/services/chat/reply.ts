@@ -164,10 +164,8 @@ export const getReplyText = (reply: AssistantMessage) =>
   reply.blocks.map((block) => (block.type === 'text' ? block.text : '')).join('')
 
 /**
- * 只有正常达到输出上限或被停止的回复可续写，报错回复不能续写。
- * 末条限制由调用方判断，拒绝和客户端工具调用不能续写。
- * 本轮含服务端工具调用或结果（含 READ_LINK 和孤立结果块）的回复不能续写。
- * 服务端模板提示不能作为续写前缀。
+ * 达到输出上限、被手动停止，或流式传输中途意外中断（且已有部分思考/正文）的回复可续写；
+ * 拒绝、客户端工具调用、含服务端工具块或服务端模板提示的回复不能续写。
  */
 export const canContinueReply = (reply: AssistantMessage): boolean => {
   if (
@@ -184,9 +182,23 @@ export const canContinueReply = (reply: AssistantMessage): boolean => {
   ) {
     return false
   }
-  return (
-    reply.status === 'stopped' || (reply.status === 'done' && reply.stopReason === 'max_tokens')
-  )
+  if (
+    reply.status === 'stopped' ||
+    (reply.status === 'done' && reply.stopReason === 'max_tokens')
+  ) {
+    return true
+  }
+  if (
+    reply.status === 'error' &&
+    (reply.error?.kind === 'interrupted' || reply.error?.kind === 'network')
+  ) {
+    return reply.blocks.some(
+      (block) =>
+        (block.type === 'text' && block.text.trim().length > 0) ||
+        (block.type === 'thinking' && block.thinking.trim().length > 0)
+    )
+  }
+  return false
 }
 
 /**
@@ -200,14 +212,23 @@ const isUsableReply = (message: Message): message is AssistantMessage =>
   !message.blocks.some((block) => block.type === 'text' && block.isTemplate) &&
   getReplyText(message) !== ''
 
+/** 将画板实时状态快照以稳定格式拼接到用户消息末尾（不放进 system prompt，避免破坏前缀 KV 缓存）。 */
+export const appendCanvasContext = (content: string, canvasContext?: string): string => {
+  if (!canvasContext) {
+    return content
+  }
+  return content ? `${content}\n\n${canvasContext}` : canvasContext
+}
+
 /** 有文件时用内容块数组：先文件后文本，文件按 Files API 的 file_id 引用 */
-const toUserParam = ({ content, files }: UserMessage): MessageParam => {
+const toUserParam = ({ content, files }: UserMessage, canvasContext?: string): MessageParam => {
+  const text = appendCanvasContext(content, canvasContext)
   const blocks = toFileBlocks(files)
   return blocks.length === 0
-    ? { role: 'user', content }
+    ? { role: 'user', content: text }
     : {
         role: 'user',
-        content: [...blocks, ...(content ? [{ type: 'text' as const, text: content }] : [])],
+        content: [...blocks, ...(text ? [{ type: 'text' as const, text }] : [])],
       }
 }
 
@@ -298,16 +319,19 @@ export const getContextRounds = (history: Message[]): [UserMessage, AssistantMes
 /**
  * 把会话转成请求的 messages：只保留「提问 + 有回答的回复」成对的轮次，最后接上本轮提问。
  * 失败或没有回答的轮次不进上下文。续写时末尾再带上本轮 assistant。
+ * latestReminder 与 canvasContext 均只在首次出现或发生变化时按历史快照注入，保证多轮前缀完全一致以命中 KV 缓存。
  */
 export const toRequestMessages = (
   history: Message[],
   question: UserMessage,
   prefix?: AssistantMessage,
   thinking = prefix?.thinking ?? false,
-  latestReminder?: string
+  latestReminder?: string,
+  canvasContext?: string
 ): MessageParam[] => {
   const messages: MessageParam[] = []
   let previousReminder: string | undefined
+  let previousCanvasContext: string | undefined
   const appendReminder = (reminder: string | undefined) => {
     // 仅在当前分支首次出现或内容变化时插入快照；缺少快照的消息保持原有内容。
     if (reminder && reminder !== previousReminder) {
@@ -315,16 +339,26 @@ export const toRequestMessages = (
       previousReminder = reminder
     }
   }
+  const resolveCanvasSnapshot = (snapshot: string | undefined): string | undefined => {
+    if (snapshot && snapshot !== previousCanvasContext) {
+      previousCanvasContext = snapshot
+      return snapshot
+    }
+    return undefined
+  }
   for (const [user, reply] of getContextRounds(history)) {
     // 历史提问没有文字、附件也都没有 serverId 时，提问为空，连同回答一起省略。
     if (!user.content && toFileBlocks(user.files).length === 0) {
       continue
     }
     appendReminder(reply.latestReminder)
-    messages.push(toUserParam(user), toAssistantParam(reply))
+    messages.push(
+      toUserParam(user, resolveCanvasSnapshot(reply.canvasContext)),
+      toAssistantParam(reply)
+    )
   }
   appendReminder(latestReminder)
-  messages.push(toUserParam(question))
+  messages.push(toUserParam(question, resolveCanvasSnapshot(canvasContext)))
   if (prefix?.prefix) {
     const assistant = toAssistantParam(prefix, true, thinking)
     // 没有非空白正文或有效思考时直接重发原问题，避免服务端拒绝空 Prefill。
