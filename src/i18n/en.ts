@@ -20,7 +20,7 @@ export const en = {
   settingDialogAsideProvidersOptionLabel: 'Models & APIs',
   tutorModeSwitch: 'Socratic Guide',
   tutorModeTooltip:
-    'Ask one guiding question per step and draw incrementally on the whiteboard instead of revealing the answer',
+    'When on, AI asks guiding questions step by step; when off, AI answers directly while the whiteboard remains available',
   canvasOpen: 'Whiteboard',
   canvasClose: 'Hide board',
   deleteSessionModalContentTitle: 'Delete chat?',

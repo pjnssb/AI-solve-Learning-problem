@@ -1,6 +1,7 @@
 import clsx from 'clsx'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { sendQuickMessage, useChatStore } from '../../services/chat/store.js'
+import { useSettings } from '../../services/settings.js'
 import {
   setFlowDirectionOverride,
   setSelectedFlowNodeId,
@@ -281,6 +282,7 @@ export const FlowchartCanvas = ({
   const flowDirectionOverride = useCanvasStore((state) => state.flowDirectionOverride)
   const flowStatusOverrides = useCanvasStore((state) => state.flowStatusOverrides)
   const activeSessionId = useChatStore((state) => state.activeId)
+  const tutorMode = useSettings((state) => state.tutorMode)
   const streaming = useChatStore((state) =>
     state.activeId ? Object.hasOwn(state.streaming, state.activeId) : false
   )
@@ -397,10 +399,10 @@ export const FlowchartCanvas = ({
     return (
       <div className={styles.container}>
         <div className={styles.emptyState}>
-          <div className={styles.emptyTitle}>渐进式思维流程图画板</div>
+          <div className={styles.emptyTitle}>思维流程图画板</div>
           <div className={styles.emptyDesc}>
-            遇到英语长难句拆解、逻辑分类讨论或解题思路梳理时，AI
-            会随你的每一步回答逐个生长出流程节点，绝不一口气画完。
+            无论是英语长难句拆解、逻辑分类讨论、算法流程还是知识梳理，无论是否开启苏格拉底引导，AI
+            都可以随时在这里为你绘制和更新清晰的可视化流程图。
           </div>
         </div>
       </div>
@@ -897,13 +899,13 @@ export const FlowchartCanvas = ({
                 disabled={streaming}
                 onClick={() => {
                   const prompt =
-                    selectedNode.kind === 'question' && selectedStatus !== 'solved'
+                    tutorMode && selectedNode.kind === 'question' && selectedStatus !== 'solved'
                       ? `针对流程图里的待推导节点「${selectedNode.label}」，请再给我一点引导提示或一起推进这一步。`
                       : `请详细展开讲讲流程图中的「${selectedNode.label}」这一步。`
                   sendQuickMessage(activeSessionId, prompt)
                 }}
               >
-                {selectedNode.kind === 'question' && selectedStatus !== 'solved'
+                {tutorMode && selectedNode.kind === 'question' && selectedStatus !== 'solved'
                   ? '请 AI 引导此步'
                   : '追问此节点'}
               </button>

@@ -97,7 +97,114 @@ const choicesBlock = (choices: string[]) =>
 const isHintRequest = (text: string) => /提示|不懂|不会|不确定|hint|help|stuck|不知道/i.test(text)
 
 /** 课程 1：将军饮马（动点 + 对称辅助线 + 动态辅助线段） */
-const buildShortestPathTurn = (round: number, userText: string): DemoTurn => {
+const buildShortestPathTurn = (round: number, userText: string, tutorMode = true): DemoTurn => {
+  if (!tutorMode) {
+    return {
+      title: '动点最值 · 将军饮马问题',
+      thinking:
+        '当前为直接解答模式（关闭苏格拉底引导），一次性在坐标系画板绘制已知点、对称辅助线、动点与最值点并给出完整推导答案。',
+      content: [
+        '已为你直接在右侧**坐标系画板**绘制完整几何模型与对称辅助线，并给出完整解答：',
+        toolBlock('coord_setup', '初始化坐标系：将军饮马动点问题', {
+          title: '动点最值：PA + PB 最小',
+          xMin: -1,
+          xMax: 7,
+          yMin: -3.5,
+          yMax: 5.5,
+        }),
+        toolBlock('coord_plot_point', '标出已知点 A(1, 2)', {
+          id: 'A',
+          label: 'A(1, 2)',
+          x: 1,
+          y: 2,
+          color: '#3964FE',
+        }),
+        toolBlock('coord_plot_point', '标出已知点 B(5, 4)', {
+          id: 'B',
+          label: 'B(5, 4)',
+          x: 5,
+          y: 4,
+          color: '#3964FE',
+        }),
+        toolBlock('coord_add_moving_point', '在 x 轴上添加动点 P(t, 0)', {
+          id: 'P',
+          label: 'P',
+          pathType: 'segment',
+          from: [0, 0],
+          to: [6, 0],
+          tMin: 0,
+          tMax: 6,
+          initialT: 7 / 3,
+          color: '#EF4444',
+        }),
+        toolBlock('coord_draw_segment', '连接动态线段 PA', {
+          id: 'seg-PA',
+          fromId: 'P',
+          toId: 'A',
+          color: '#2563EB',
+          showLength: true,
+        }),
+        toolBlock('coord_draw_segment', '连接动态线段 PB', {
+          id: 'seg-PB',
+          fromId: 'P',
+          toId: 'B',
+          color: '#2563EB',
+          showLength: true,
+        }),
+        toolBlock('coord_draw_auxiliary_line', "作辅助线：点 A 关于 x 轴的对称线 AA'", {
+          id: 'aux-sym-A',
+          kind: 'symmetry',
+          fromId: 'A',
+          axis: 'x',
+          derivedPointId: 'A_prime',
+          derivedPointLabel: "A'(1, -2)",
+          label: '对称辅助线',
+          color: '#F59E0B',
+          showRightAngle: true,
+        }),
+        toolBlock('coord_draw_auxiliary_line', "作动态辅助线：连接动点 P 与对称点 A'", {
+          id: 'aux-P-Aprime',
+          kind: 'connect',
+          fromId: 'P',
+          toId: 'A_prime',
+          label: "PA'",
+          color: '#F59E0B',
+        }),
+        toolBlock('coord_draw_auxiliary_line', "作辅助线：连接 A'B 确定最短直线路径", {
+          id: 'aux-Aprime-B',
+          kind: 'connect',
+          fromId: 'A_prime',
+          toId: 'B',
+          label: "A'B 最短路径",
+          color: '#10B981',
+        }),
+        toolBlock('coord_plot_point', '标出最优位置 P₀(7/3, 0)', {
+          id: 'P0',
+          label: 'P₀(7/3, 0)',
+          x: 7 / 3,
+          y: 0,
+          color: '#10B981',
+        }),
+        toolBlock('coord_add_measurement', '实时监测 PA + PB 的长度之和', {
+          id: 'm-sum',
+          label: 'PA + PB',
+          kind: 'sum_distance',
+          pairs: [
+            ['P', 'A'],
+            ['P', 'B'],
+          ],
+          optimalValue: Math.hypot(4, 6),
+          optimalHint: '达到最小值！',
+          color: '#10B981',
+        }),
+        toolBlock('coord_set_t', '将动点 P 置于最优位置 P₀', {
+          pointId: 'P',
+          t: 7 / 3,
+        }),
+        "### 完整解题过程\n1. **化同侧为异侧**：作点 $A(1, 2)$ 关于 $x$ 轴的对称点 $A'(1, -2)$。\n2. **等量转化**：由于 $x$ 轴垂直平分 $AA'$，对 $x$ 轴上任意动点 $P$ 都有 $PA = PA'$，因此 $PA + PB = PA' + PB$。\n3. **三点共线取最小**：连接 $A'B$，当 $A'$、$P$、$B$ 三点共线时长度最小：\n   - **最小值**：$A'B = \\sqrt{(5 - 1)^2 + (4 - (-2))^2} = \\sqrt{16 + 36} = 2\\sqrt{13} \\approx 7.21$\n   - **此时点 $P$ 坐标**：直线 $A'B$ 的方程为 $y + 2 = \\frac{3}{2}(x - 1)$，令 $y = 0$ 得 $x = \\frac{7}{3}$，即 $P_0\\left(\\frac{7}{3}, 0\\right)$。\n\n你可以直接拖动右侧画板上的红点 $P$ 验证任意位置下的 $PA + PB$ 变化。",
+      ].join('\n\n'),
+    }
+  }
   if (round === 0) {
     return {
       title: '动点最值 · 将军饮马问题',
@@ -275,7 +382,94 @@ const buildShortestPathTurn = (round: number, userText: string): DemoTurn => {
 }
 
 /** 课程 2：抛物线动点最大面积（函数图像 + 动点 + 动态垂直辅助线 PH + 实时面积） */
-const buildParabolaAreaTurn = (round: number, userText: string): DemoTurn => {
+const buildParabolaAreaTurn = (round: number, userText: string, tutorMode = true): DemoTurn => {
+  if (!tutorMode) {
+    return {
+      title: '抛物线动点 · △POA 最大面积',
+      thinking:
+        '当前为直接解答模式（关闭苏格拉底引导），直接在坐标系画板绘制抛物线、三角形、动态高线 PH ⊥ x 轴及顶点 B(2, 4)，并输出完整推导与答案。',
+      content: [
+        '已为你直接在右侧**坐标系画板**绘制抛物线、动态三角形 $\\triangle POA$ 与铅垂高辅助线 $PH$，并给出完整解答：',
+        toolBlock('coord_setup', '初始化坐标系：抛物线动点面积问题', {
+          title: '抛物线动点：△POA 最大面积',
+          xMin: -1,
+          xMax: 5.5,
+          yMin: -1.5,
+          yMax: 5.2,
+        }),
+        toolBlock('coord_draw_function', '绘制抛物线 y = -x² + 4x', {
+          id: 'parabola',
+          expr: '-x^2 + 4*x',
+          label: 'y = -x² + 4x',
+          color: '#3964FE',
+          domain: [-0.5, 4.5],
+        }),
+        toolBlock('coord_plot_point', '标出交点 O(0, 0)', {
+          id: 'O',
+          label: 'O(0, 0)',
+          x: 0,
+          y: 0,
+          color: '#3964FE',
+        }),
+        toolBlock('coord_plot_point', '标出交点 A(4, 0)', {
+          id: 'A',
+          label: 'A(4, 0)',
+          x: 4,
+          y: 0,
+          color: '#3964FE',
+        }),
+        toolBlock('coord_add_moving_point', '在抛物线弧 OA 上添加动点 P', {
+          id: 'P',
+          label: 'P',
+          pathType: 'function',
+          expr: '-x^2 + 4*x',
+          tMin: 0.2,
+          tMax: 3.8,
+          initialT: 2,
+          color: '#EF4444',
+        }),
+        toolBlock('coord_draw_polygon', '绘制动态三角形 △POA', {
+          id: 'tri-POA',
+          vertexIds: ['P', 'O', 'A'],
+          fill: 'rgba(57, 100, 254, 0.16)',
+          stroke: '#2563EB',
+          showArea: true,
+        }),
+        toolBlock('coord_draw_auxiliary_line', '作动态辅助线：过动点 P 作 PH ⊥ x 轴', {
+          id: 'aux-PH',
+          kind: 'perpendicular',
+          fromId: 'P',
+          axis: 'x',
+          derivedPointId: 'H',
+          derivedPointLabel: 'H',
+          label: '高 PH',
+          color: '#F59E0B',
+          showRightAngle: true,
+        }),
+        toolBlock('coord_plot_point', '标出抛物线顶点 B(2, 4)', {
+          id: 'B',
+          label: '顶点 B(2, 4)',
+          x: 2,
+          y: 4,
+          color: '#10B981',
+        }),
+        toolBlock('coord_add_measurement', '实时监测 △POA 的面积', {
+          id: 'm-area',
+          label: 'S△POA',
+          kind: 'area',
+          pointIds: ['P', 'O', 'A'],
+          optimalValue: 8,
+          optimalHint: '达到最大面积！',
+          color: '#10B981',
+        }),
+        toolBlock('coord_set_t', '将动点 P 移动到顶点 x = 2 验证最大面积', {
+          pointId: 'P',
+          t: 2,
+        }),
+        '### 完整解题过程\n1. **确定底边**：抛物线交 $x$ 轴于 $O(0,0)$ 和 $A(4,0)$，因此底边 $OA = 4$。\n2. **作高建立函数**：过点 $P(x, -x^2 + 4x)\\ (0 < x < 4)$ 作 $PH \\perp x$ 轴于 $H$，则高 $PH = y_P = -x^2 + 4x$。\n3. **面积表达式与配方求最值**：\n   $$S_{\\triangle POA} = \\frac{1}{2} \\cdot OA \\cdot PH = \\frac{1}{2} \\times 4 \\times (-x^2 + 4x) = -2x^2 + 8x = -2(x - 2)^2 + 8$$\n4. **结论**：当 $x = 2$（即 $P$ 运动到顶点 $(2, 4)$）时，$S_{\\triangle POA}$ 取得最大值 **$8$**。',
+      ].join('\n\n'),
+    }
+  }
   if (round === 0) {
     return {
       title: '抛物线动点 · △POA 最大面积',
@@ -425,7 +619,89 @@ const buildParabolaAreaTurn = (round: number, userText: string): DemoTurn => {
 }
 
 /** 课程 3：英语长难句语法结构渐进式流程图拆解 */
-const buildEnglishClauseTurn = (round: number, userText: string): DemoTurn => {
+const buildEnglishClauseTurn = (round: number, userText: string, tutorMode = true): DemoTurn => {
+  if (!tutorMode) {
+    return {
+      title: '英语长难句 · 语法拆解流程图',
+      thinking: '当前为直接解答模式，一次性在流程图画板绘制完整语法树并给出长难句拆解与翻译。',
+      content: [
+        '已为你直接在右侧**思维流程图画板**生成完整语法结构树，并附上逐层解析：',
+        '原句：\n> *The scientist who discovered the method that transformed how students learn mathematics won the award.*',
+        toolBlock('flow_init', '创建英语长难句拆解流程图', {
+          title: '英语长难句 · 语法结构图',
+          direction: 'TD',
+        }),
+        toolBlock('flow_add_node', '添加原句根节点', {
+          id: 'root',
+          label: '原句输入 (Complex Sentence)',
+          sublabel: 'The scientist who discovered ... won the award.',
+          kind: 'start',
+          status: 'solved',
+        }),
+        toolBlock('flow_add_node', '主句主干', {
+          id: 'main_clause',
+          label: '主句主干：The scientist won the award',
+          sublabel: '这位科学家赢得了奖项',
+          kind: 'grammar',
+          status: 'solved',
+        }),
+        toolBlock('flow_add_edge', '连接主句主干', {
+          from: 'root',
+          to: 'main_clause',
+          label: '剥离主谓宾',
+        }),
+        toolBlock('flow_add_node', '第一重定语从句', {
+          id: 'clause1',
+          label: '定语从句 ①：who discovered the method ...',
+          sublabel: '修饰主语 scientist（发现某种方法的科学家）',
+          kind: 'grammar',
+          status: 'solved',
+        }),
+        toolBlock('flow_add_edge', '连接第一重定语从句', {
+          from: 'main_clause',
+          to: 'clause1',
+          label: '修饰 scientist',
+        }),
+        toolBlock('flow_add_node', '第二重定语从句', {
+          id: 'clause2',
+          label: '定语从句 ②：that transformed ...',
+          sublabel: '修饰先行词 the method（改变了……的方法）',
+          kind: 'grammar',
+          status: 'solved',
+        }),
+        toolBlock('flow_add_edge', '连接第二重定语从句', {
+          from: 'clause1',
+          to: 'clause2',
+          label: '修饰 method',
+        }),
+        toolBlock('flow_add_node', '宾语从句', {
+          id: 'clause3',
+          label: '宾语从句 ③：how students learn mathematics',
+          sublabel: '作 transformed 的宾语（学生如何学习数学）',
+          kind: 'grammar',
+          status: 'solved',
+        }),
+        toolBlock('flow_add_edge', '连接宾语从句', {
+          from: 'clause2',
+          to: 'clause3',
+          label: '作 transformed 宾语',
+        }),
+        toolBlock('flow_add_node', '完整意译', {
+          id: 'result',
+          label: '完整意译',
+          sublabel: '那位发现了“彻底改变学生数学学习方式之方法”的科学家赢得了该奖项。',
+          kind: 'result',
+          status: 'solved',
+        }),
+        toolBlock('flow_add_edge', '连接最终译文', {
+          from: 'clause3',
+          to: 'result',
+          label: '重组整合',
+        }),
+        '### 语法结构拆解\n1. **主句主干**：*The scientist won the award.*（科学家赢得了奖项）\n2. **定语从句 ①**：*who discovered the method ...* 修饰 *scientist*\n3. **定语从句 ②**：*that transformed ...* 修饰 *the method*\n4. **宾语从句 ③**：*how students learn mathematics* 作 *transformed* 的宾语\n5. **完整参考译文**：**那位发现了“彻底改变学生数学学习方式之方法”的科学家赢得了该奖项。**',
+      ].join('\n\n'),
+    }
+  }
   if (round === 0) {
     return {
       title: '英语长难句 · 语法拆解流程图',
@@ -591,7 +867,77 @@ const buildEnglishClauseTurn = (round: number, userText: string): DemoTurn => {
 }
 
 /** 课程 4：一元二次方程求根逻辑（渐进式决策流程图） */
-const buildQuadraticFlowTurn = (round: number, userText: string): DemoTurn => {
+const buildQuadraticFlowTurn = (round: number, userText: string, tutorMode = true): DemoTurn => {
+  if (!tutorMode) {
+    return {
+      title: '一元二次方程 · 求解流程图',
+      thinking:
+        '当前为直接解答模式，直接在流程图画板呈现完整的一元二次方程求解决策树并给出结论汇总。',
+      content: [
+        '已为你直接在右侧**思维流程图画板**绘制完整的一元二次方程 $ax^2 + bx + c = 0\\ (a \\neq 0)$ 求解决策流程图：',
+        toolBlock('flow_init', '绘制一元二次方程求解流程图', {
+          title: 'ax² + bx + c = 0 求解策略树',
+          direction: 'TD',
+        }),
+        toolBlock('flow_add_node', '标准方程', {
+          id: 'start',
+          label: '标准形式：ax² + bx + c = 0',
+          sublabel: '确认二次项系数 a ≠ 0，提取系数 a, b, c',
+          kind: 'start',
+          status: 'solved',
+        }),
+        toolBlock('flow_add_node', '判断判别式', {
+          id: 'disc',
+          label: '判断 Δ = b² - 4ac 的符号',
+          sublabel: '根据 Δ 的正负分三种情况讨论',
+          kind: 'decision',
+          status: 'solved',
+        }),
+        toolBlock('flow_add_edge', '连接判别式判断', {
+          from: 'start',
+          to: 'disc',
+          label: '计算判别式',
+        }),
+        toolBlock('flow_add_node', 'Δ > 0 分支', {
+          id: 'gt0',
+          label: '两不等实根',
+          sublabel: 'x = (-b ± √Δ) / (2a)',
+          kind: 'result',
+          status: 'solved',
+        }),
+        toolBlock('flow_add_edge', '连接 Δ > 0', {
+          from: 'disc',
+          to: 'gt0',
+          label: 'Δ > 0',
+        }),
+        toolBlock('flow_add_node', 'Δ = 0 分支', {
+          id: 'eq0',
+          label: '两相等实根（重根）',
+          sublabel: 'x₁ = x₂ = -b / (2a)',
+          kind: 'result',
+          status: 'solved',
+        }),
+        toolBlock('flow_add_edge', '连接 Δ = 0', {
+          from: 'disc',
+          to: 'eq0',
+          label: 'Δ = 0',
+        }),
+        toolBlock('flow_add_node', 'Δ < 0 分支', {
+          id: 'lt0',
+          label: '无实数根',
+          sublabel: '（在复数范围内有一对共轭虚根）',
+          kind: 'result',
+          status: 'solved',
+        }),
+        toolBlock('flow_add_edge', '连接 Δ < 0', {
+          from: 'disc',
+          to: 'lt0',
+          label: 'Δ < 0',
+        }),
+        '### 核心结论汇总\n对于 $ax^2 + bx + c = 0\\ (a \\neq 0)$，记判别式 $\\Delta = b^2 - 4ac$：\n- **$\\Delta > 0$**：有两个不相等的实数根 $x_{1,2} = \\frac{-b \\pm \\sqrt{\\Delta}}{2a}$\n- **$\\Delta = 0$**：有两个相等的实数根 $x_1 = x_2 = -\\frac{b}{2a}$\n- **$\\Delta < 0$**：在实数范围内无实根（在复数范围内有一对共轭虚根）',
+      ].join('\n\n'),
+    }
+  }
   if (round === 0) {
     return {
       title: '一元二次方程 · 求解流程图',
@@ -730,12 +1076,68 @@ const buildQuadraticFlowTurn = (round: number, userText: string): DemoTurn => {
   }
 }
 
-/** 自由输入智能响应（在演示模式下，根据用户输入的数学表达式或英语文本动态生成第 1 步可视化） */
-const buildCustomDemoTurn = (round: number, userText: string, firstText: string): DemoTurn => {
+/** 自由输入智能响应（在演示模式下，根据用户输入的数学表达式或英语文本动态生成画板可视化） */
+const buildCustomDemoTurn = (
+  round: number,
+  userText: string,
+  firstText: string,
+  tutorMode = true
+): DemoTurn => {
   // 尝试识别简单函数表达式，例如 y = 2x + 1 或 y = x^2 - 4x + 3
   const fnMatch = firstText.match(/y\s*=\s*([0-9a-zA-Z\s+\-*/^().²³]+)/i)
   if (fnMatch) {
     const expr = fnMatch[1].trim()
+    if (!tutorMode) {
+      return {
+        title: `函数图像：y = ${expr}`,
+        thinking: `当前为直接解答模式，直接绘制函数 y = ${expr}、可拖动点 P 及垂直辅助线 PH ⊥ x 轴。`,
+        content: [
+          `已为你直接在右侧**坐标系画板**绘制函数 $y = ${expr}$ 的图像，并附上可拖动点 $P$ 与坐标垂线 $PH \\perp x$ 轴：`,
+          toolBlock('coord_setup', `初始化坐标系：y = ${expr}`, {
+            title: `函数图像：y = ${expr}`,
+            xMin: -5,
+            xMax: 7,
+            yMin: -5,
+            yMax: 7,
+          }),
+          toolBlock('coord_draw_function', `绘制函数 y = ${expr}`, {
+            id: 'custom-fn',
+            expr,
+            label: `y = ${expr}`,
+            color: '#3964FE',
+          }),
+          toolBlock('coord_add_moving_point', '在图像上添加可拖动观察点 P', {
+            id: 'P',
+            label: 'P',
+            pathType: 'function',
+            expr,
+            tMin: -3,
+            tMax: 5,
+            initialT: 1,
+            color: '#EF4444',
+          }),
+          toolBlock('coord_draw_auxiliary_line', '作动态辅助线：PH ⊥ x 轴', {
+            id: 'aux-custom-PH',
+            kind: 'perpendicular',
+            fromId: 'P',
+            axis: 'x',
+            derivedPointId: 'H',
+            derivedPointLabel: 'H',
+            label: 'PH ⊥ x轴',
+            color: '#F59E0B',
+            showRightAngle: true,
+          }),
+          toolBlock('coord_add_measurement', '实时显示点 P 坐标', {
+            id: 'm-coord',
+            label: '动点 P 坐标',
+            kind: 'coord',
+            pointIds: ['P'],
+            color: '#10B981',
+          }),
+          '你可以拖动红色点 $P$ 沿曲线滑动查看任意横纵坐标与图像走势；也可以点击右上角模型选择器接入 DeepSeek / OpenAI / Claude / Gemini 获取任意题目的深度解析。',
+        ].join('\n\n'),
+      }
+    }
     if (round === 0) {
       return {
         title: `函数探究：y = ${expr}`,
@@ -812,6 +1214,51 @@ const buildCustomDemoTurn = (round: number, userText: string, firstText: string)
   const looksEnglish =
     /[a-zA-Z]{4,}/.test(firstText) && !/坐标|动点|抛物线|几何|三角形/.test(firstText)
   if (looksEnglish) {
+    if (!tutorMode) {
+      return {
+        title: '英语结构 · 流程图拆解',
+        thinking: '当前为直接解答模式，使用流程图画板直接梳理输入英语内容的结构框架。',
+        content: [
+          '已为你直接在右侧**思维流程图画板**生成英语结构拆解框架：',
+          toolBlock('flow_init', '创建英语结构流程图', {
+            title: '英语文本结构分析',
+            direction: 'TD',
+          }),
+          toolBlock('flow_add_node', '原文输入', {
+            id: 'e-start',
+            label: '原文片段',
+            sublabel: firstText.slice(0, 60),
+            kind: 'start',
+            status: 'solved',
+          }),
+          toolBlock('flow_add_node', '抓主句主干', {
+            id: 'e-step1',
+            label: '步骤 1：定位主语与谓语动词',
+            sublabel: '先剥离介词短语、非谓语及从句引导词',
+            kind: 'grammar',
+            status: 'solved',
+          }),
+          toolBlock('flow_add_edge', '连接步骤 1', {
+            from: 'e-start',
+            to: 'e-step1',
+            label: '找主干',
+          }),
+          toolBlock('flow_add_node', '理清修饰与语义', {
+            id: 'e-step2',
+            label: '步骤 2：还原从句与逻辑关系',
+            sublabel: '确定先行词与逻辑连接词后重组语序',
+            kind: 'result',
+            status: 'solved',
+          }),
+          toolBlock('flow_add_edge', '连接步骤 2', {
+            from: 'e-step1',
+            to: 'e-step2',
+            label: '重组译文',
+          }),
+          '> 💡 当前为免 Key 演示模式；点击顶部模型选择器接入 DeepSeek / GPT-4o / Claude / Gemini 后，即可针对任意英语长难句或文章生成完整逐词句法流程图与精准解析。',
+        ].join('\n\n'),
+      }
+    }
     if (round === 0) {
       return {
         title: '英语思考 · 渐进拆解',
@@ -862,8 +1309,8 @@ const buildCustomDemoTurn = (round: number, userText: string, firstText: string)
     }
   }
 
-  // 默认引导至坐标系或精品课
-  return buildShortestPathTurn(round, userText)
+  // 默认引导至坐标系或直接演示完整画板解答
+  return buildShortestPathTurn(round, userText, tutorMode)
 }
 
 const detectLesson = (firstPrompt: string, latestPrompt: string): string => {
@@ -913,23 +1360,38 @@ const sleep = (ms: number, signal: AbortSignal) =>
     signal.addEventListener('abort', onAbort, { once: true })
   })
 
-const buildLiveCanvasProbeTurn = (userText: string): DemoTurn | null => {
-  const isCoordProbe = /结合我现在坐标系画板上的动点位置/.test(userText)
+const buildLiveCanvasProbeTurn = (userText: string, tutorMode = true): DemoTurn | null => {
+  const isCoordProbe = /结合我现在坐标系画板上的/.test(userText)
   const flowMatch = userText.match(/(?:待推导节点|流程图中的)「([^」]+)」/)
   if (!isCoordProbe && !flowMatch) {
     return null
   }
   const state = useCanvasStore.getState()
   const board = getCurrentCanvasBoard(state)
+  const hasUserCoord =
+    state.userPoints.length > 0 || state.userSegments.length > 0 || state.userFunctions.length > 0
 
-  if (isCoordProbe && board.hasCoordinate) {
+  if (isCoordProbe && (board.hasCoordinate || hasUserCoord)) {
     const mp = board.coordinate.movingPoints[0]
     const pos = mp ? resolvePointCoords(board.coordinate, mp.id, state.tValues) : null
     const coordText = pos ? `$(${pos.x.toFixed(2)}, ${pos.y.toFixed(2)})$` : '当前位置'
-    const userNote =
-      state.userPoints.length > 0 || state.userSegments.length > 0 || state.userFunctions.length > 0
-        ? `\n\n我同时看到你在画板上自己添加了 ${state.userPoints.length} 个探索点、${state.userSegments.length} 条探索线段和 ${state.userFunctions.length} 条函数曲线，非常棒的主动尝试！`
-        : ''
+    const userNote = hasUserCoord
+      ? `\n\n我同时看到你在画板上自己添加了 ${state.userPoints.length} 个探索点、${state.userSegments.length} 条探索线段和 ${state.userFunctions.length} 条函数曲线。`
+      : ''
+
+    if (!tutorMode) {
+      const pointSummary = mp
+        ? `当前动点 $${mp.label}$ 位于 ${coordText}。`
+        : '已读取你当前坐标系画板上的元素。'
+      return {
+        thinking: '当前为直接解答模式，读取画板实时坐标与自绘元素并给出直接分析。',
+        content: [
+          `${pointSummary}${userNote}`,
+          '你可以在顶部模型选择器接入真实大模型 API 后，直接针对画板上任意自绘点、辅助线或函数曲线获得精确解析。',
+        ].join('\n\n'),
+      }
+    }
+
     return {
       thinking: '读取学生当前画板上的动点实时坐标与自绘元素，给出针对性苏格拉底反馈。',
       content: [
@@ -943,11 +1405,21 @@ const buildLiveCanvasProbeTurn = (userText: string): DemoTurn | null => {
   if (flowMatch) {
     const nodeLabel = flowMatch[1]
     const node = board.flowchart.nodes.find((n) => n.label === nodeLabel)
+    if (!tutorMode) {
+      return {
+        thinking: `针对用户在流程图上点选的节点「${nodeLabel}」给出直接解释。`,
+        content: [
+          `你点选了流程图中的节点：**「${nodeLabel}」**${node?.sublabel ? `（${node.sublabel}）` : ''}。`,
+          '该节点代表整体推理链路中的这一关键步骤；若接入顶部模型选择器中的真实大模型 API，还可以继续针对该节点做任意深度的展开与补充。',
+        ].join('\n\n'),
+      }
+    }
     return {
       thinking: `针对学生在流程图上点选的节点「${nodeLabel}」提供聚焦引导。`,
       content: [
         `你点选了流程图里的节点：**「${nodeLabel}」**${node?.sublabel ? `（${node.sublabel}）` : ''}。`,
-        node?.kind === 'question' && (state.flowStatusOverrides[node.id] ?? node.status) !== 'solved'
+        node?.kind === 'question' &&
+        (state.flowStatusOverrides[node.id] ?? node.status) !== 'solved'
           ? '这是一个待你破解的关键问题节点！试着回顾上一步给出的已知条件，写出你的判断或点击下方思路继续推进。'
           : '这一步承接了前面节点的推导条件，把核心结论固定下来后，才能继续向下一层分支推进。你想对这一步再确认什么细节，还是继续往下推导？',
         choicesBlock(['给我一点提示', '继续推进下一步']),
@@ -958,14 +1430,15 @@ const buildLiveCanvasProbeTurn = (userText: string): DemoTurn | null => {
 }
 
 /**
- * 流式输出内置演示导师回复：真实模拟「思考 -> 分步讲解 -> 实时调用 Agent 画板工具 -> 停下来提问」的节奏！
+ * 流式输出内置演示回复：支持苏格拉底分步引导模式与直接解答模式，两种模式下均支持实时调用画板工具。
  */
 export async function* streamDemoTutorReply(
   history: Message[],
   question: UserMessage,
   thinking: boolean,
   _locale: Locale,
-  signal: AbortSignal
+  signal: AbortSignal,
+  tutorMode = true
 ): AsyncGenerator<MessageStreamEvent> {
   const rounds = getContextRounds(history)
   const firstUserText = rounds[0]?.[0].content ?? question.content
@@ -978,26 +1451,26 @@ export async function* streamDemoTutorReply(
     lessonId !== 'custom'
   const roundIndex = switchedMidSession ? 0 : rounds.length
 
-  const probeTurn = buildLiveCanvasProbeTurn(question.content)
+  const probeTurn = buildLiveCanvasProbeTurn(question.content, tutorMode)
   let turn: DemoTurn
   if (probeTurn) {
     turn = probeTurn
   } else {
     switch (lessonId) {
       case 'math-shortest-path':
-        turn = buildShortestPathTurn(roundIndex, question.content)
+        turn = buildShortestPathTurn(roundIndex, question.content, tutorMode)
         break
       case 'math-parabola-area':
-        turn = buildParabolaAreaTurn(roundIndex, question.content)
+        turn = buildParabolaAreaTurn(roundIndex, question.content, tutorMode)
         break
       case 'english-clause-flowchart':
-        turn = buildEnglishClauseTurn(roundIndex, question.content)
+        turn = buildEnglishClauseTurn(roundIndex, question.content, tutorMode)
         break
       case 'math-quadratic-flowchart':
-        turn = buildQuadraticFlowTurn(roundIndex, question.content)
+        turn = buildQuadraticFlowTurn(roundIndex, question.content, tutorMode)
         break
       default:
-        turn = buildCustomDemoTurn(roundIndex, question.content, firstUserText)
+        turn = buildCustomDemoTurn(roundIndex, question.content, firstUserText, tutorMode)
         break
     }
   }

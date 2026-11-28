@@ -155,9 +155,7 @@ export const jumpToMessageStep = (messageId: string, toolCall?: TutorToolCall) =
     open: true,
     activeTab: mode,
     selectedStep: isLatest ? null : target.stepNumber,
-    ...(mode === 'coordinate'
-      ? { selectedCoordId: targetId }
-      : { selectedFlowNodeId: targetId }),
+    ...(mode === 'coordinate' ? { selectedCoordId: targetId } : { selectedFlowNodeId: targetId }),
   })
 }
 
@@ -233,9 +231,7 @@ export const addUserCoordFunction = (expr: string) =>
 export const removeUserCoordElement = (id: string) =>
   useCanvasStore.setState((state) => ({
     userPoints: state.userPoints.filter((p) => p.id !== id),
-    userSegments: state.userSegments.filter(
-      (s) => s.id !== id && s.fromId !== id && s.toId !== id
-    ),
+    userSegments: state.userSegments.filter((s) => s.id !== id && s.fromId !== id && s.toId !== id),
     userFunctions: state.userFunctions.filter((f) => f.id !== id),
     selectedCoordId: state.selectedCoordId === id ? null : state.selectedCoordId,
   }))
@@ -308,6 +304,13 @@ export const syncCanvasFromMessages = (sessionId: string | null, visibleMessages
 
   const prev = useCanvasStore.getState()
   const sessionChanged = prev.currentSessionId !== sessionId
+  const startingFromWelcome =
+    prev.currentSessionId === null &&
+    steps.length === 0 &&
+    visibleMessages.length <= 2 &&
+    visibleMessages.some(
+      (m) => m.role === 'assistant' && (m.status === 'pending' || m.status === 'streaming')
+    )
   const latestStep = steps.at(-1)
   const latestBoard = latestStep?.board
 
@@ -347,9 +350,13 @@ export const syncCanvasFromMessages = (sessionId: string | null, visibleMessages
           selectedFlowNodeId: null,
           flowDirectionOverride: null,
           flowStatusOverrides: {},
-          userPoints: [],
-          userSegments: [],
-          userFunctions: [],
+          ...(startingFromWelcome
+            ? {}
+            : {
+                userPoints: [],
+                userSegments: [],
+                userFunctions: [],
+              }),
           playing: false,
         }
       : {}),

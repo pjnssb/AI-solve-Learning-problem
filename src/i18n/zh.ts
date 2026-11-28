@@ -15,7 +15,8 @@ export const zh = {
   appName: 'AI 苏格拉底导师',
   settingDialogAsideProvidersOptionLabel: '模型与服务商',
   tutorModeSwitch: '苏格拉底引导',
-  tutorModeTooltip: '开启后 AI 不直接给答案，一步步提问并在画板增量作图',
+  tutorModeTooltip:
+    '开启后 AI 不直接给答案，一步步提问并在画板渐进作图；关闭后直接解答，画板依然通用可用',
   canvasOpen: '打开画板',
   canvasClose: '收起画板',
   deleteSessionModalContentTitle: '永久删除对话',

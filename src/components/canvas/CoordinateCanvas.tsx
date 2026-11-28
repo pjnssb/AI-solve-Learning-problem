@@ -1,6 +1,7 @@
 import clsx from 'clsx'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore, sendQuickMessage } from '../../services/chat/store.js'
+import { useSettings } from '../../services/settings.js'
 import { compileMathExpr } from '../../services/tutor/mathEval.js'
 import {
   addUserCoordFunction,
@@ -25,6 +26,7 @@ import type {
   CoordinateState,
   CoordViewport,
 } from '../../services/tutor/types.js'
+import { ensureApiKey } from '../settings/settingsDialogState.js'
 import styles from './CoordinateCanvas.module.css'
 
 type ToolMode = 'pan' | 'point' | 'segment' | 'function'
@@ -160,6 +162,7 @@ export const CoordinateCanvas = ({
   const userFunctions = useCanvasStore((state) => state.userFunctions)
 
   const activeSessionId = useChatStore((state) => state.activeId)
+  const tutorMode = useSettings((state) => state.tutorMode)
   const streaming = useChatStore((state) =>
     state.activeId ? Object.hasOwn(state.streaming, state.activeId) : false
   )
@@ -189,7 +192,7 @@ export const CoordinateCanvas = ({
 
   const effectiveShowGrid = showGridLocal ?? coordinate.showGrid
   const hasUserItems = userPoints.length > 0 || userSegments.length > 0 || userFunctions.length > 0
-  const effectiveHasContent = hasContent || hasUserItems
+  const effectiveHasContent = hasContent || hasUserItems || toolMode !== 'pan'
 
   // 当题目切换或 coord_setup 变更视口时，同步视口范围
   const baseViewportKey = `${coordinate.viewport.xMin},${coordinate.viewport.xMax},${coordinate.viewport.yMin},${coordinate.viewport.yMax}`
@@ -214,7 +217,7 @@ export const CoordinateCanvas = ({
     const observer = new ResizeObserver(update)
     observer.observe(el)
     return () => observer.disconnect()
-  }, [])
+  }, [effectiveHasContent])
 
   // 动点自动播放动画循环（支持往返 bounce 与单向循环 loop）
   const directionRef = useRef<Record<string, 1 | -1>>({})
@@ -616,19 +619,22 @@ export const CoordinateCanvas = ({
         <div className={styles.emptyState}>
           <div className={styles.emptyTitle}>动态数学坐标系画板</div>
           <div className={styles.emptyDesc}>
-            提问几何、函数或动点题后，AI 导师会每讲一步调用 Agent
-            工具在这里实时作图、添加辅助线并让动点移动起来；你也可以随时切换右侧工具自行标点、画函数探索。
+            提问几何、函数或动点问题后，AI 可随时调用画板工具在这里实时作图、添加辅助线与动点；无论是否开启苏格拉底引导，你都可以随时打开画板自行标点、连线或画函数。
           </div>
           <div className={styles.emptyActions}>
             <button
               type="button"
               className={styles.emptyActionBtn}
-              onClick={() => {
-                addUserCoordPoint(1, 2)
-                setToolMode('point')
-              }}
+              onClick={() => setToolMode('point')}
             >
-              自己先标个点试试
+              开启自由画板（标点 / 连线）
+            </button>
+            <button
+              type="button"
+              className={styles.emptyActionBtn}
+              onClick={() => setToolMode('function')}
+            >
+              绘制函数 y = f(x)
             </button>
           </div>
         </div>
@@ -824,17 +830,20 @@ export const CoordinateCanvas = ({
               清自绘
             </button>
           ) : null}
-          {activeSessionId ? (
+          {hasContent || hasUserItems ? (
             <button
               type="button"
               className={styles.askAiBtn}
               disabled={streaming}
-              title="把当前动点坐标与你添加的点/辅助线同步给 AI 导师点评"
+              title="把当前画板上的动点坐标与你添加的点/辅助线/函数同步给 AI 分析"
               onClick={() => {
-                sendQuickMessage(
-                  activeSessionId,
-                  '请结合我现在坐标系画板上的动点位置与图形，看看我的探索对不对，下一步该怎么思考？'
-                )
+                if (!ensureApiKey()) {
+                  return
+                }
+                const prompt = tutorMode
+                  ? '请结合我现在坐标系画板上的动点位置与图形，看看我的探索对不对，下一步该怎么思考？'
+                  : '请结合我现在坐标系画板上的图形、函数与标点位置，帮我分析一下当前画面。'
+                sendQuickMessage(activeSessionId, prompt)
               }}
             >
               问 AI 当前画面

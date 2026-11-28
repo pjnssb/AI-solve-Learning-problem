@@ -41,13 +41,11 @@ import {
 import { buildCanvasContextSummary } from '../tutor/canvasContext.js'
 import { streamDemoTutorReply } from '../tutor/demoEngine.js'
 import { streamMultiProviderMessage } from '../tutor/multiProtocolClient.js'
-import { buildSocraticSystemPrompt } from '../tutor/prompts.js'
+import { buildSystemPrompt } from '../tutor/prompts.js'
 import { getActiveProviderAndModel } from '../tutor/providers.js'
 
 /** deepseek-flash 同时支持深度思考与图片输入 */
 const MODEL: ChatModel = 'deepseek-flash'
-/** 普通聊天模式下的默认助手身份说明 */
-const SYSTEM_PROMPT = '该助手为 AI Solve Learning Problem 教学助手。'
 /** 保留最近打开的详情；当前会话、生成中及尚未成功保存的会话不淘汰。 */
 const SESSION_CACHE_LIMIT = 5
 /** 安全审核固定开启，所有请求都走扩展模式 */
@@ -1022,10 +1020,8 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
       try {
         const { provider, model } = getActiveProviderAndModel()
         const settingsState = useSettings.getState()
-        const canvasContext = settingsState.tutorMode ? buildCanvasContextSummary() : ''
-        const baseSystemPrompt = settingsState.tutorMode
-          ? buildSocraticSystemPrompt(settingsState.locale)
-          : SYSTEM_PROMPT
+        const canvasContext = buildCanvasContextSummary()
+        const baseSystemPrompt = buildSystemPrompt(settingsState.locale, settingsState.tutorMode)
         const systemPrompt = canvasContext
           ? `${baseSystemPrompt}\n\n${canvasContext}`
           : baseSystemPrompt
@@ -1043,7 +1039,8 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             prepared.question,
             initial.thinking ?? false,
             settingsState.locale,
-            controller.signal
+            controller.signal,
+            settingsState.tutorMode
           )
         } else if (provider.protocol === 'deepseek-native') {
           const latestReminder = prepared.prefix
