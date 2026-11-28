@@ -292,13 +292,21 @@ export const CoordinateCanvas = ({
 
   const zoomBy = useCallback(
     (factor: number, centerX = size.width / 2, centerY = size.height / 2) => {
-      const anchorX = transform.toWorldX(centerX)
-      const anchorY = transform.toWorldY(centerY)
+      if (!Number.isFinite(factor) || factor <= 0) {
+        return
+      }
       setViewport((prev) => {
         const nextW = prev.xMax - prev.xMin
         if ((factor < 1 && nextW < 0.25) || (factor > 1 && nextW > 5000)) {
           return prev
         }
+        const worldW = Math.max(0.5, prev.xMax - prev.xMin)
+        const worldH = Math.max(0.5, prev.yMax - prev.yMin)
+        const scale = Math.min(size.width / worldW, size.height / worldH)
+        const cx = (prev.xMin + prev.xMax) / 2
+        const cy = (prev.yMin + prev.yMax) / 2
+        const anchorX = cx + (centerX - size.width / 2) / scale
+        const anchorY = cy - (centerY - size.height / 2) / scale
         return {
           xMin: anchorX + (prev.xMin - anchorX) * factor,
           xMax: anchorX + (prev.xMax - anchorX) * factor,
@@ -307,8 +315,72 @@ export const CoordinateCanvas = ({
         }
       })
     },
-    [size.width, size.height, transform]
+    [size.width, size.height]
   )
+
+  const zoomByRef = useRef(zoomBy)
+  zoomByRef.current = zoomBy
+
+  // 必须使用非 passive 原生监听拦截触控板双指捏合（ctrlKey + wheel 及 Safari gesture*），避免浏览器缩放整页
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) {
+      return
+    }
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      event.stopPropagation()
+      let dy = event.deltaY
+      if (event.deltaMode === 1) {
+        dy *= 16
+      } else if (event.deltaMode === 2) {
+        dy *= 100
+      }
+      if (!dy) {
+        return
+      }
+      const clampedDy = Math.max(-180, Math.min(180, dy))
+      const sensitivity = event.ctrlKey ? 0.008 : 0.0012
+      const factor = Math.exp(clampedDy * sensitivity)
+      const rect = el.getBoundingClientRect()
+      zoomByRef.current(factor, event.clientX - rect.left, event.clientY - rect.top)
+    }
+
+    let lastScale = 1
+    const onGestureStart = (event: Event) => {
+      event.preventDefault()
+      lastScale = 1
+    }
+    const onGestureChange = (event: Event) => {
+      event.preventDefault()
+      const gestureEvent = event as Event & { scale?: number; clientX?: number; clientY?: number }
+      const scale = typeof gestureEvent.scale === 'number' && gestureEvent.scale > 0 ? gestureEvent.scale : 1
+      const stepScale = scale / lastScale
+      lastScale = scale
+      if (!Number.isFinite(stepScale) || stepScale <= 0 || Math.abs(stepScale - 1) < 1e-4) {
+        return
+      }
+      const rect = el.getBoundingClientRect()
+      const cx = typeof gestureEvent.clientX === 'number' ? gestureEvent.clientX - rect.left : rect.width / 2
+      const cy = typeof gestureEvent.clientY === 'number' ? gestureEvent.clientY - rect.top : rect.height / 2
+      zoomByRef.current(1 / stepScale, cx, cy)
+    }
+    const onGestureEnd = (event: Event) => {
+      event.preventDefault()
+      lastScale = 1
+    }
+
+    el.addEventListener('wheel', onWheel, { passive: false })
+    el.addEventListener('gesturestart', onGestureStart, { passive: false })
+    el.addEventListener('gesturechange', onGestureChange, { passive: false })
+    el.addEventListener('gestureend', onGestureEnd, { passive: false })
+    return () => {
+      el.removeEventListener('wheel', onWheel)
+      el.removeEventListener('gesturestart', onGestureStart)
+      el.removeEventListener('gesturechange', onGestureChange)
+      el.removeEventListener('gestureend', onGestureEnd)
+    }
+  }, [effectiveHasContent])
 
   // 合并所有可用点位（AI 固定点 + 动点 + 派生点 + 学生自绘点），供连线与悬浮检测使用
   const allInteractivePoints = useMemo(() => {
@@ -897,12 +969,6 @@ export const CoordinateCanvas = ({
           (toolMode === 'point' || toolMode === 'segment') && styles.stageCrosshair
         )}
         onDoubleClick={() => fitAllElements()}
-        onWheel={(event) => {
-          event.preventDefault()
-          const rect = event.currentTarget.getBoundingClientRect()
-          const factor = event.deltaY > 0 ? 1.12 : 1 / 1.12
-          zoomBy(factor, event.clientX - rect.left, event.clientY - rect.top)
-        }}
         onPointerDown={(event) => {
           activePointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
           if (activePointersRef.current.size === 2) {

@@ -289,8 +289,8 @@ export const FlowchartCanvas = ({
 
   const stageRef = useRef<HTMLDivElement>(null)
   const [stageSize, setStageSize] = useState({ width: 520, height: 420 })
-  const [pan, setPan] = useState({ x: 0, y: 0 })
-  const [zoom, setZoom] = useState(1)
+  const [view, setView] = useState({ zoom: 1, pan: { x: 0, y: 0 } })
+  const { zoom, pan } = view
   const [dragging, setDragging] = useState(false)
   const [nodeOffsets, setNodeOffsets] = useState<Record<string, { dx: number; dy: number }>>({})
 
@@ -335,16 +335,18 @@ export const FlowchartCanvas = ({
     const observer = new ResizeObserver(update)
     observer.observe(el)
     return () => observer.disconnect()
-  }, [])
+  }, [hasContent])
 
   const fitToView = useCallback(() => {
     const scaleX = (stageSize.width - 44) / Math.max(1, layout.bounds.width)
     const scaleY = (stageSize.height - 80) / Math.max(1, layout.bounds.height)
     const nextZoom = Math.max(0.45, Math.min(1.08, Math.min(scaleX, scaleY)))
-    setZoom(nextZoom)
-    setPan({
-      x: (stageSize.width - layout.bounds.width * nextZoom) / 2,
-      y: Math.max(24, (stageSize.height - layout.bounds.height * nextZoom) / 2),
+    setView({
+      zoom: nextZoom,
+      pan: {
+        x: (stageSize.width - layout.bounds.width * nextZoom) / 2,
+        y: Math.max(24, (stageSize.height - layout.bounds.height * nextZoom) / 2),
+      },
     })
   }, [stageSize.width, stageSize.height, layout.bounds.width, layout.bounds.height])
 
@@ -365,18 +367,87 @@ export const FlowchartCanvas = ({
 
   const zoomAt = useCallback(
     (factor: number, cx = stageSize.width / 2, cy = stageSize.height / 2) => {
-      setZoom((prevZoom) => {
-        const nextZoom = Math.max(0.35, Math.min(2.4, prevZoom * factor))
-        const ratio = nextZoom / prevZoom
-        setPan((prevPan) => ({
-          x: cx - (cx - prevPan.x) * ratio,
-          y: cy - (cy - prevPan.y) * ratio,
-        }))
-        return nextZoom
+      if (!Number.isFinite(factor) || factor <= 0) {
+        return
+      }
+      setView((prev) => {
+        const nextZoom = Math.max(0.35, Math.min(2.4, prev.zoom * factor))
+        const ratio = nextZoom / prev.zoom
+        return {
+          zoom: nextZoom,
+          pan: {
+            x: cx - (cx - prev.pan.x) * ratio,
+            y: cy - (cy - prev.pan.y) * ratio,
+          },
+        }
       })
     },
     [stageSize.width, stageSize.height]
   )
+
+  const zoomAtRef = useRef(zoomAt)
+  zoomAtRef.current = zoomAt
+
+  // 使用非 passive 原生监听拦截触控板双指捏合（ctrlKey + wheel 及 Safari gesture*），避免浏览器缩放整页
+  useEffect(() => {
+    const el = stageRef.current
+    if (!el) {
+      return
+    }
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      event.stopPropagation()
+      let dy = event.deltaY
+      if (event.deltaMode === 1) {
+        dy *= 16
+      } else if (event.deltaMode === 2) {
+        dy *= 100
+      }
+      if (!dy) {
+        return
+      }
+      const clampedDy = Math.max(-180, Math.min(180, dy))
+      const sensitivity = event.ctrlKey ? 0.008 : 0.0012
+      const factor = Math.exp(-clampedDy * sensitivity)
+      const rect = el.getBoundingClientRect()
+      zoomAtRef.current(factor, event.clientX - rect.left, event.clientY - rect.top)
+    }
+
+    let lastScale = 1
+    const onGestureStart = (event: Event) => {
+      event.preventDefault()
+      lastScale = 1
+    }
+    const onGestureChange = (event: Event) => {
+      event.preventDefault()
+      const gestureEvent = event as Event & { scale?: number; clientX?: number; clientY?: number }
+      const scale = typeof gestureEvent.scale === 'number' && gestureEvent.scale > 0 ? gestureEvent.scale : 1
+      const stepScale = scale / lastScale
+      lastScale = scale
+      if (!Number.isFinite(stepScale) || stepScale <= 0 || Math.abs(stepScale - 1) < 1e-4) {
+        return
+      }
+      const rect = el.getBoundingClientRect()
+      const cx = typeof gestureEvent.clientX === 'number' ? gestureEvent.clientX - rect.left : rect.width / 2
+      const cy = typeof gestureEvent.clientY === 'number' ? gestureEvent.clientY - rect.top : rect.height / 2
+      zoomAtRef.current(stepScale, cx, cy)
+    }
+    const onGestureEnd = (event: Event) => {
+      event.preventDefault()
+      lastScale = 1
+    }
+
+    el.addEventListener('wheel', onWheel, { passive: false })
+    el.addEventListener('gesturestart', onGestureStart, { passive: false })
+    el.addEventListener('gesturechange', onGestureChange, { passive: false })
+    el.addEventListener('gestureend', onGestureEnd, { passive: false })
+    return () => {
+      el.removeEventListener('wheel', onWheel)
+      el.removeEventListener('gesturestart', onGestureStart)
+      el.removeEventListener('gesturechange', onGestureChange)
+      el.removeEventListener('gestureend', onGestureEnd)
+    }
+  }, [hasContent])
 
   // 计算选中节点及其邻接关系，用于聚焦高亮
   const connectedIds = useMemo(() => {
@@ -433,12 +504,6 @@ export const FlowchartCanvas = ({
         ref={stageRef}
         className={clsx(styles.stage, dragging && styles.stageDragging)}
         onDoubleClick={fitToView}
-        onWheel={(event) => {
-          event.preventDefault()
-          const rect = event.currentTarget.getBoundingClientRect()
-          const factor = event.deltaY > 0 ? 0.91 : 1.1
-          zoomAt(factor, event.clientX - rect.left, event.clientY - rect.top)
-        }}
         onPointerDown={(event) => {
           activePointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
           if (activePointersRef.current.size === 2) {
@@ -480,10 +545,12 @@ export const FlowchartCanvas = ({
               Math.min(2.4, pinchRef.current.zoom * (dist / pinchRef.current.dist))
             )
             const ratio = nextZoom / pinchRef.current.zoom
-            setZoom(nextZoom)
-            setPan({
-              x: pinchRef.current.cx - (pinchRef.current.cx - pinchRef.current.pan.x) * ratio,
-              y: pinchRef.current.cy - (pinchRef.current.cy - pinchRef.current.pan.y) * ratio,
+            setView({
+              zoom: nextZoom,
+              pan: {
+                x: pinchRef.current.cx - (pinchRef.current.cx - pinchRef.current.pan.x) * ratio,
+                y: pinchRef.current.cy - (pinchRef.current.cy - pinchRef.current.pan.y) * ratio,
+              },
             })
             return
           }
@@ -493,10 +560,13 @@ export const FlowchartCanvas = ({
             return
           }
           if (drag.kind === 'pan') {
-            setPan({
-              x: drag.panX + (event.clientX - drag.startX),
-              y: drag.panY + (event.clientY - drag.startY),
-            })
+            setView((prev) => ({
+              ...prev,
+              pan: {
+                x: drag.panX + (event.clientX - drag.startX),
+                y: drag.panY + (event.clientY - drag.startY),
+              },
+            }))
           } else {
             const dxScreen = event.clientX - drag.startX
             const dyScreen = event.clientY - drag.startY

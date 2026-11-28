@@ -132,6 +132,33 @@ export const TutorCanvasPanel = () => {
   const isNarrow = useIsNarrowSplit()
   const [resizing, setResizing] = useState(false)
   const svgRef = useRef<SVGSVGElement>(null)
+  const panelRef = useRef<HTMLElement>(null)
+
+  // 防止光标落在画板工具栏、标题栏或空白引导区时触控板双指捏合缩放整页
+  useEffect(() => {
+    const el = panelRef.current
+    if (!open || !el) {
+      return
+    }
+    const onWheel = (event: WheelEvent) => {
+      if (event.ctrlKey) {
+        event.preventDefault()
+      }
+    }
+    const preventGesture = (event: Event) => {
+      event.preventDefault()
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    el.addEventListener('gesturestart', preventGesture, { passive: false })
+    el.addEventListener('gesturechange', preventGesture, { passive: false })
+    el.addEventListener('gestureend', preventGesture, { passive: false })
+    return () => {
+      el.removeEventListener('wheel', onWheel)
+      el.removeEventListener('gesturestart', preventGesture)
+      el.removeEventListener('gesturechange', preventGesture)
+      el.removeEventListener('gestureend', preventGesture)
+    }
+  }, [open])
 
   if (!open) {
     return null
@@ -202,6 +229,7 @@ export const TutorCanvasPanel = () => {
 
   return (
     <aside
+      ref={panelRef}
       className={clsx(styles.panel, isNarrow && mobileFullscreen && styles.panelMobileFullscreen)}
       style={panelStyle}
     >
