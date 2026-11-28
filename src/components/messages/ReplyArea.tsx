@@ -1,6 +1,6 @@
 import { useTranslate } from '../../i18n/index.js'
 import clsx from 'clsx'
-import { memo, useEffect, useState, type ReactNode } from 'react'
+import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   IconBrowseOutline16,
   IconBrowseWarningOutline16,
@@ -65,10 +65,18 @@ export const ReplyArea = memo(function ReplyArea({
   hasResponse: boolean
 }) {
   useTranslate()
-  const [open, setOpen] = useState(true)
   const titleActive = streaming && !hasResponse
+  const [open, setOpen] = useState(titleActive)
+  const prevTitleActiveRef = useRef(titleActive)
+  useEffect(() => {
+    const prev = prevTitleActiveRef.current
+    prevTitleActiveRef.current = titleActive
+    if (prev !== titleActive) {
+      setOpen(titleActive)
+    }
+  }, [titleActive])
   useTicker(titleActive, 1000)
-  if (view.steps.length === 0 && !(message.thinking && streaming)) {
+  if (view.steps.length === 0 && !(message.thinking && titleActive)) {
     return null
   }
   // 开关开启或模型实际返回了思考步骤时，均显示可折叠的思考时间线标题。

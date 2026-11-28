@@ -61,17 +61,15 @@ export const AssistantMessage = memo(function AssistantMessage({
     .filter(Boolean)
     .join('\n\n')
   const copyText = responseText || notice?.text
+  const hasOutput =
+    Boolean(responseText) ||
+    Boolean(parsedTutor && (parsedTutor.toolCalls.length > 0 || parsedTutor.pendingToolLabel))
   const waiting = streaming && view.steps.length === 0 && !view.answer && !message.thinking
   const summaryEntry = `${message.id}-summary`
   return (
     <div className={styles.message}>
       {refused ? null : (
-        <ReplyArea
-          message={message}
-          view={view}
-          streaming={streaming}
-          hasResponse={!!responseText}
-        />
+        <ReplyArea message={message} view={view} streaming={streaming} hasResponse={hasOutput} />
       )}
       {parsedTutor && parsedTutor.cleanMarkdown ? (
         <Markdown
