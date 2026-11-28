@@ -46,6 +46,8 @@ import type {
   CoordViewport,
 } from '../../services/tutor/types.js'
 import { ensureApiKey } from '../settings/settingsDialogState.js'
+import { InlineMarkdown } from '../markdown/Markdown.js'
+import { SvgMathText } from './SvgMathText.js'
 import styles from './CoordinateCanvas.module.css'
 
 type ToolMode = 'pan' | 'point' | 'segment' | 'function'
@@ -185,9 +187,12 @@ export const CoordinateCanvas = ({
   const scriptPersistentStateRef = useRef<Record<string, unknown>>({})
   const scriptDtRef = useRef(0)
   const activePointersRef = useRef<Map<number, { x: number; y: number }>>(new Map())
-  const pinchStartRef = useRef<{ dist: number; viewport: CoordViewport; cx: number; cy: number } | null>(
-    null
-  )
+  const pinchStartRef = useRef<{
+    dist: number
+    viewport: CoordViewport
+    cx: number
+    cy: number
+  } | null>(null)
   const dragStateRef = useRef<DragSession | null>(null)
 
   const effectiveShowGrid = showGridLocal ?? coordinate.showGrid
@@ -324,7 +329,13 @@ export const CoordinateCanvas = ({
     if (Object.keys(traceTargets).length > 0) {
       appendTracePoints(traceTargets)
     }
-  }, [coordinate.points, coordinate.movingPoints, coordinate.derivedPoints, solvedScene.points, globalTraceOn])
+  }, [
+    coordinate.points,
+    coordinate.movingPoints,
+    coordinate.derivedPoints,
+    solvedScene.points,
+    globalTraceOn,
+  ])
 
   // 统一动画循环：支持 AI 控制脚本时间轴播放 + 普通动点自动播放（单次 batchUpdate，避免多点渲染抖动）
   const directionRef = useRef<Record<string, 1 | -1>>({})
@@ -431,7 +442,15 @@ export const CoordinateCanvas = ({
       cancelAnimationFrame(raf)
       scriptDtRef.current = 0
     }
-  }, [playing, speed, loopMode, coordinate.movingPoints, coordinate.motionScript, coordinate.constraints, hasAnimatable])
+  }, [
+    playing,
+    speed,
+    loopMode,
+    coordinate.movingPoints,
+    coordinate.motionScript,
+    coordinate.constraints,
+    hasAnimatable,
+  ])
 
   // 等比例坐标系映射（保证圆仍是正圆、直角仍是 90°）
   const transform = useMemo(() => {
@@ -721,7 +740,14 @@ export const CoordinateCanvas = ({
       yMin: minY - padY,
       yMax: maxY + padY,
     })
-  }, [allInteractivePoints, coordinate, tValues, solvedScene.params, solvedScene.points, userPoints])
+  }, [
+    allInteractivePoints,
+    coordinate,
+    tValues,
+    solvedScene.params,
+    solvedScene.points,
+    userPoints,
+  ])
 
   const gridStep = chooseGridStep(transform.visibleXMax - transform.visibleXMin)
   const subStep = gridStep / 2
@@ -1249,7 +1275,8 @@ export const CoordinateCanvas = ({
         <div className={styles.emptyState}>
           <div className={styles.emptyTitle}>动态数学坐标系画板</div>
           <div className={styles.emptyDesc}>
-            提问几何、函数、动点或约束轨迹问题后，AI 可实时作图、设定线段/角度/方程约束条件，甚至编写动点控制程序；你也可以随时开启自由画板自行标点、连线或画函数。
+            提问几何、函数、动点或约束轨迹问题后，AI
+            可实时作图、设定线段/角度/方程约束条件，甚至编写动点控制程序；你也可以随时开启自由画板自行标点、连线或画函数。
           </div>
           <div className={styles.emptyActions}>
             <button
@@ -1439,7 +1466,9 @@ export const CoordinateCanvas = ({
           <button
             type="button"
             className={clsx(styles.miniBtn, (globalTraceOn || hasTraces) && styles.miniBtnActive)}
-            title={globalTraceOn ? '关闭轨迹留痕（再次点击清除留痕）' : '开启所有动点/派生点运动轨迹留痕'}
+            title={
+              globalTraceOn ? '关闭轨迹留痕（再次点击清除留痕）' : '开启所有动点/派生点运动轨迹留痕'
+            }
             onClick={() => {
               if (globalTraceOn) {
                 setGlobalTraceOn(false)
@@ -1551,11 +1580,7 @@ export const CoordinateCanvas = ({
                         : styles.constraintWarn
                   )}
                 >
-                  {!st.enabled
-                    ? '已停用'
-                    : st.satisfied
-                      ? '满足 ✓'
-                      : `误差 ${st.error.toFixed(2)}`}
+                  {!st.enabled ? '已停用' : st.satisfied ? '满足 ✓' : `误差 ${st.error.toFixed(2)}`}
                 </span>
               </label>
             ))}
@@ -1916,8 +1941,10 @@ export const CoordinateCanvas = ({
               size.width / (vp.xMax - vp.xMin),
               size.height / (vp.yMax - vp.yMin)
             )
-            const anchorX = (vp.xMin + vp.xMax) / 2 + (pinchStartRef.current.cx - size.width / 2) / scale
-            const anchorY = (vp.yMin + vp.yMax) / 2 - (pinchStartRef.current.cy - size.height / 2) / scale
+            const anchorX =
+              (vp.xMin + vp.xMax) / 2 + (pinchStartRef.current.cx - size.width / 2) / scale
+            const anchorY =
+              (vp.yMin + vp.yMax) / 2 - (pinchStartRef.current.cy - size.height / 2) / scale
             setViewport({
               xMin: anchorX + (vp.xMin - anchorX) * factor,
               xMax: anchorX + (vp.xMax - anchorX) * factor,
@@ -2605,7 +2632,7 @@ export const CoordinateCanvas = ({
                 ) : null}
                 {aux.label ? (
                   <text x={mx + 8} y={my - 6} className={styles.auxLabel} fill={aux.color}>
-                    {aux.label}
+                    <SvgMathText text={aux.label} />
                   </text>
                 ) : null}
                 {geom.derivedPoint && aux.derivedPointId ? (
@@ -2635,7 +2662,7 @@ export const CoordinateCanvas = ({
                       className={styles.pointLabel}
                       fill={aux.color}
                     >
-                      {aux.derivedPointLabel || aux.derivedPointId}
+                      <SvgMathText text={aux.derivedPointLabel || aux.derivedPointId} />
                     </text>
                   </g>
                 ) : null}
@@ -2664,7 +2691,7 @@ export const CoordinateCanvas = ({
                 className={styles.pointLabel}
                 fill={note.color}
               >
-                {note.text}
+                <SvgMathText text={note.text} />
               </text>
             )
           })}
@@ -2676,7 +2703,7 @@ export const CoordinateCanvas = ({
               className={styles.pointLabel}
               fill={note.color}
             >
-              {note.text}
+              <SvgMathText text={note.text} />
             </text>
           ))}
 
@@ -2873,7 +2900,9 @@ export const CoordinateCanvas = ({
                     className={styles.measureDot}
                     style={{ backgroundColor: measurement.color }}
                   />
-                  <span>{measurement.label}</span>
+                  <span>
+                    <InlineMarkdown text={measurement.label} />
+                  </span>
                   <span className={styles.measureValue}>{display}</span>
                   {isOptimal && measurement.optimalHint ? (
                     <span className={styles.optimalBadge}>{measurement.optimalHint}</span>

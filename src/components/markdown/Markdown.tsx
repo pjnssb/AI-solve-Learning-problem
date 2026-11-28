@@ -1,8 +1,9 @@
 import { memo, useMemo } from 'react'
+import type { PhrasingContent } from 'mdast'
 import type { Source } from '../../services/chat/view.js'
 import { toMdAst } from '../../services/markdown/parse.js'
 import { useScrollToBottom } from '../messages/scrollContext.js'
-import { MarkdownAstRenderer } from './MarkdownAstRenderer.js'
+import { MarkdownAstRenderer, MarkdownPhrasingContent } from './MarkdownAstRenderer.js'
 import { useThrottleMarkdownRender } from './useThrottleMarkdownRender.js'
 import './markdown.css'
 import './highlight.css'
@@ -41,4 +42,27 @@ export const Markdown = memo(function Markdown({
       onUpdate={scrollToBottom}
     />
   ) : null
+})
+
+/** 轻量行内富文本渲染：支持 $...$、\(...\)、<sub>、<sup>、**...** 等，适用于选项按钮与画板文字 */
+export const InlineMarkdown = memo(function InlineMarkdown({ text }: { text: string }) {
+  const nodes = useMemo((): PhrasingContent[] | null => {
+    if (!text) {
+      return null
+    }
+    const ast = toMdAst(text, { sources: undefined, disableLink: true })
+    if (ast.children.length === 1 && ast.children[0].type === 'paragraph') {
+      return ast.children[0].children
+    }
+    return null
+  }, [text])
+
+  if (!nodes) {
+    return <>{text}</>
+  }
+  return (
+    <span className="ds-markdown ds-markdown-inline">
+      <MarkdownPhrasingContent nodes={nodes} />
+    </span>
+  )
 })

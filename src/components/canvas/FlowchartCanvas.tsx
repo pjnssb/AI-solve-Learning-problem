@@ -11,6 +11,8 @@ import {
 import type { FlowchartState, FlowNode } from '../../services/tutor/types.js'
 import { copyText } from '../../utils/clipboard.js'
 import { showToast } from '../base/toastState.js'
+import { InlineMarkdown } from '../markdown/Markdown.js'
+import { parseSvgMathSegments, stripSvgMathTags, SvgMathText } from './SvgMathText.js'
 import styles from './FlowchartCanvas.module.css'
 
 type PositionedNode = {
@@ -30,42 +32,59 @@ const visualCharWidth = (ch: string): number => (ch.charCodeAt(0) > 255 ? 1.85 :
 
 const estimateTextPx = (text: string, fontSize = 11): number => {
   let units = 0
-  for (const ch of text) {
+  for (const ch of stripSvgMathTags(text)) {
     units += visualCharWidth(ch)
   }
   return Math.ceil(units * (fontSize * 0.62))
 }
 
 const wrapLines = (text: string, maxUnits: number, maxLines: number): string[] => {
+  const segments = parseSvgMathSegments(text)
   const lines: string[] = []
   let current = ''
   let widthCount = 0
-  for (const ch of text) {
-    if (ch === '\n') {
-      lines.push(current)
-      current = ''
-      widthCount = 0
-      if (lines.length >= maxLines) {
-        return lines
+  let truncated = false
+
+  const wrapTag = (kind: 'normal' | 'sub' | 'sup', body: string) =>
+    kind === 'normal' ? body : `<${kind}>${body}</${kind}>`
+
+  outer: for (const seg of segments) {
+    let segBuf = ''
+    for (const ch of seg.text) {
+      if (ch === '\n') {
+        lines.push(current + (segBuf ? wrapTag(seg.kind, segBuf) : ''))
+        current = ''
+        segBuf = ''
+        widthCount = 0
+        if (lines.length >= maxLines) {
+          truncated = true
+          break outer
+        }
+        continue
       }
-      continue
+      const chWidth = visualCharWidth(ch) * (seg.kind === 'normal' ? 1 : 0.78)
+      if (widthCount + chWidth > maxUnits && (current || segBuf)) {
+        const lineText = current + (segBuf ? wrapTag(seg.kind, segBuf) : '')
+        lines.push(lineText)
+        if (lines.length >= maxLines) {
+          const plainLast = stripSvgMathTags(lines[lines.length - 1])
+          lines[lines.length - 1] = `${plainLast.slice(0, Math.max(1, plainLast.length - 1))}…`
+          truncated = true
+          break outer
+        }
+        current = ''
+        segBuf = ch
+        widthCount = chWidth
+      } else {
+        segBuf += ch
+        widthCount += chWidth
+      }
     }
-    const chWidth = visualCharWidth(ch)
-    if (widthCount + chWidth > maxUnits && current) {
-      lines.push(current)
-      if (lines.length >= maxLines) {
-        const last = lines[lines.length - 1]
-        lines[lines.length - 1] = `${last.slice(0, Math.max(1, last.length - 1))}…`
-        return lines
-      }
-      current = ch
-      widthCount = chWidth
-    } else {
-      current += ch
-      widthCount += chWidth
+    if (segBuf) {
+      current += wrapTag(seg.kind, segBuf)
     }
   }
-  if (current) {
+  if (!truncated && current) {
     lines.push(current)
   }
   return lines
@@ -168,8 +187,10 @@ const computeFlowLayout = (flowchart: FlowchartState, direction: 'TD' | 'LR') =>
         const pb = (parentsMap.get(b.id) ?? [])
           .map((pid) => orderIndex.get(pid))
           .filter((idx): idx is number => idx !== undefined)
-        const avgA = pa.length > 0 ? pa.reduce((s, v) => s + v, 0) / pa.length : Number.MAX_SAFE_INTEGER
-        const avgB = pb.length > 0 ? pb.reduce((s, v) => s + v, 0) / pb.length : Number.MAX_SAFE_INTEGER
+        const avgA =
+          pa.length > 0 ? pa.reduce((s, v) => s + v, 0) / pa.length : Number.MAX_SAFE_INTEGER
+        const avgB =
+          pb.length > 0 ? pb.reduce((s, v) => s + v, 0) / pb.length : Number.MAX_SAFE_INTEGER
         if (avgA !== avgB) {
           return avgA - avgB
         }
@@ -295,10 +316,24 @@ export const FlowchartCanvas = ({
   const [nodeOffsets, setNodeOffsets] = useState<Record<string, { dx: number; dy: number }>>({})
 
   const activePointersRef = useRef<Map<number, { x: number; y: number }>>(new Map())
-  const pinchRef = useRef<{ dist: number; zoom: number; pan: { x: number; y: number }; cx: number; cy: number } | null>(null)
+  const pinchRef = useRef<{
+    dist: number
+    zoom: number
+    pan: { x: number; y: number }
+    cx: number
+    cy: number
+  } | null>(null)
   const dragRef = useRef<
     | { kind: 'pan'; startX: number; startY: number; panX: number; panY: number }
-    | { kind: 'node'; nodeId: string; startX: number; startY: number; baseDx: number; baseDy: number; moved: boolean }
+    | {
+        kind: 'node'
+        nodeId: string
+        startX: number
+        startY: number
+        baseDx: number
+        baseDy: number
+        moved: boolean
+      }
     | null
   >(null)
 
@@ -312,10 +347,7 @@ export const FlowchartCanvas = ({
     const map = new Map<string, PositionedNode>()
     for (const item of layout.positioned) {
       const off = nodeOffsets[item.node.id]
-      map.set(
-        item.node.id,
-        off ? { ...item, x: item.x + off.dx, y: item.y + off.dy } : item
-      )
+      map.set(item.node.id, off ? { ...item, x: item.x + off.dx, y: item.y + off.dy } : item)
     }
     return map
   }, [layout.positioned, nodeOffsets])
@@ -363,7 +395,13 @@ export const FlowchartCanvas = ({
       prevFitKeyRef.current = key
       fitToView()
     }
-  }, [flowchart.nodes.length, flowchart.edges.length, effectiveDirection, stageSize.width, fitToView])
+  }, [
+    flowchart.nodes.length,
+    flowchart.edges.length,
+    effectiveDirection,
+    stageSize.width,
+    fitToView,
+  ])
 
   const zoomAt = useCallback(
     (factor: number, cx = stageSize.width / 2, cy = stageSize.height / 2) => {
@@ -421,15 +459,18 @@ export const FlowchartCanvas = ({
     const onGestureChange = (event: Event) => {
       event.preventDefault()
       const gestureEvent = event as Event & { scale?: number; clientX?: number; clientY?: number }
-      const scale = typeof gestureEvent.scale === 'number' && gestureEvent.scale > 0 ? gestureEvent.scale : 1
+      const scale =
+        typeof gestureEvent.scale === 'number' && gestureEvent.scale > 0 ? gestureEvent.scale : 1
       const stepScale = scale / lastScale
       lastScale = scale
       if (!Number.isFinite(stepScale) || stepScale <= 0 || Math.abs(stepScale - 1) < 1e-4) {
         return
       }
       const rect = el.getBoundingClientRect()
-      const cx = typeof gestureEvent.clientX === 'number' ? gestureEvent.clientX - rect.left : rect.width / 2
-      const cy = typeof gestureEvent.clientY === 'number' ? gestureEvent.clientY - rect.top : rect.height / 2
+      const cx =
+        typeof gestureEvent.clientX === 'number' ? gestureEvent.clientX - rect.left : rect.width / 2
+      const cy =
+        typeof gestureEvent.clientY === 'number' ? gestureEvent.clientY - rect.top : rect.height / 2
       zoomAtRef.current(stepScale, cx, cy)
     }
     const onGestureEnd = (event: Event) => {
@@ -482,7 +523,7 @@ export const FlowchartCanvas = ({
 
   const highlighted = new Set(flowchart.highlightedIds)
   const selectedNode = selectedFlowNodeId
-    ? flowchart.nodes.find((n) => n.id === selectedFlowNodeId) ?? null
+    ? (flowchart.nodes.find((n) => n.id === selectedFlowNodeId) ?? null)
     : null
   const selectedStatus = selectedNode
     ? (flowStatusOverrides[selectedNode.id] ?? selectedNode.status)
@@ -749,7 +790,7 @@ export const FlowchartCanvas = ({
                         className={styles.edgeLabelBg}
                       />
                       <text x={0} y={4} textAnchor="middle" className={styles.edgeLabelText}>
-                        {edge.label}
+                        <SvgMathText text={edge.label} />
                       </text>
                     </g>
                   ) : null}
@@ -767,7 +808,8 @@ export const FlowchartCanvas = ({
               const effectiveStatus = flowStatusOverrides[node.id] ?? node.status
               const titleLines = wrapLines(node.label, 22, 4)
               const subLines = node.sublabel ? wrapLines(node.sublabel, 29, 4) : []
-              const rx = node.kind === 'start' || node.kind === 'result' ? Math.min(28, height / 2) : 14
+              const rx =
+                node.kind === 'start' || node.kind === 'result' ? Math.min(28, height / 2) : 14
               const isSolved = effectiveStatus === 'solved'
               const isSelected = selectedFlowNodeId === node.id
               const isDimmed = connectedIds !== null && !connectedIds.has(node.id)
@@ -787,9 +829,7 @@ export const FlowchartCanvas = ({
               )
 
               const titleStartY =
-                subLines.length > 0
-                  ? 26
-                  : height / 2 - ((titleLines.length - 1) * 18) / 2 + 4
+                subLines.length > 0 ? 26 : height / 2 - ((titleLines.length - 1) * 18) / 2 + 4
 
               return (
                 <g
@@ -877,7 +917,7 @@ export const FlowchartCanvas = ({
                         textAnchor="middle"
                         className={styles.nodeTitle}
                       >
-                        {line}
+                        <SvgMathText text={line} />
                       </text>
                     ))}
                     {subLines.map((line, idx) => (
@@ -888,7 +928,7 @@ export const FlowchartCanvas = ({
                         textAnchor="middle"
                         className={styles.nodeSubtitle}
                       >
-                        {line}
+                        <SvgMathText text={line} />
                       </text>
                     ))}
                   </g>
@@ -907,13 +947,16 @@ export const FlowchartCanvas = ({
             type="button"
             className={styles.toolBtn}
             title="切换竖排 / 横排布局"
-            onClick={() =>
-              setFlowDirectionOverride(effectiveDirection === 'TD' ? 'LR' : 'TD')
-            }
+            onClick={() => setFlowDirectionOverride(effectiveDirection === 'TD' ? 'LR' : 'TD')}
           >
             {effectiveDirection === 'TD' ? '⇅ 竖排' : '⇄ 横排'}
           </button>
-          <button type="button" className={styles.zoomIconBtn} title="放大" onClick={() => zoomAt(1.18)}>
+          <button
+            type="button"
+            className={styles.zoomIconBtn}
+            title="放大"
+            onClick={() => zoomAt(1.18)}
+          >
             +
           </button>
           <button
@@ -956,10 +999,14 @@ export const FlowchartCanvas = ({
           <div className={styles.inspectorBody}>
             <div className={styles.inspectorHeader}>
               <span className={styles.inspectorBadge}>步骤 {selectedNode.stepIndex}</span>
-              <span className={styles.inspectorTitle}>{selectedNode.label}</span>
+              <span className={styles.inspectorTitle}>
+                <InlineMarkdown text={selectedNode.label} />
+              </span>
             </div>
             {selectedNode.sublabel ? (
-              <div className={styles.inspectorSub}>{selectedNode.sublabel}</div>
+              <div className={styles.inspectorSub}>
+                <InlineMarkdown text={selectedNode.sublabel} />
+              </div>
             ) : null}
           </div>
           <div className={styles.inspectorActions}>
@@ -985,10 +1032,7 @@ export const FlowchartCanvas = ({
               type="button"
               className={styles.inspectorBtn}
               onClick={() =>
-                toggleFlowNodeStatusOverride(
-                  selectedNode.id,
-                  selectedStatus ?? selectedNode.status
-                )
+                toggleFlowNodeStatusOverride(selectedNode.id, selectedStatus ?? selectedNode.status)
               }
             >
               {selectedStatus === 'solved' ? '标为待思考' : '标记已掌握 ✓'}

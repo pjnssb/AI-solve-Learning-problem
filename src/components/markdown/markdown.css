@@ -3,6 +3,11 @@
   color: var(--dsw-alias-label-primary);
 }
 
+.ds-markdown.ds-markdown-inline {
+  font: inherit;
+  color: inherit;
+}
+
 .ds-markdown strong {
   font-weight: 600;
 }
@@ -271,6 +276,74 @@
 
 .ds-markdown-html {
   font-family: var(--ds-font-family-code);
+}
+
+.ds-markdown sub,
+.ds-markdown sup {
+  position: relative;
+  font-size: 75%;
+  line-height: 0;
+  vertical-align: baseline;
+}
+
+.ds-markdown sup {
+  top: -0.45em;
+}
+
+.ds-markdown sub {
+  bottom: -0.25em;
+}
+
+.ds-markdown mark {
+  background: rgba(250, 204, 21, 0.28);
+  color: inherit;
+  padding: 0 3px;
+  border-radius: 3px;
+}
+
+.ds-markdown kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  font: 12px/1.4 var(--ds-font-family-code);
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-markdown-inline-code);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 5px;
+}
+
+.ds-markdown u,
+.ds-markdown ins {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.ds-markdown s,
+.ds-markdown del {
+  text-decoration: line-through;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.ds-markdown-center {
+  text-align: center;
+  margin: 12px 0;
+}
+
+.ds-markdown-details {
+  margin: 12px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-base);
+}
+
+.ds-markdown-details > summary {
+  cursor: pointer;
+  font-weight: 500;
+  user-select: none;
+}
+
+.ds-markdown-details[open] > summary {
+  margin-bottom: 8px;
 }
 
 .ds-markdown-cite {

@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { jumpToMessageStep } from '../../services/tutor/canvasStore.js'
 import { isCoordinateTool, isFlowchartTool } from '../../services/tutor/toolParser.js'
 import type { TutorToolCall } from '../../services/tutor/types.js'
+import { InlineMarkdown } from '../markdown/Markdown.js'
 import styles from './TutorReplyExtras.module.css'
 
 const getToolBadge = (call: TutorToolCall): { label: string; kind: 'coord' | 'aux' | 'flow' } => {
@@ -125,7 +126,9 @@ export const TutorToolCallList = ({
                   >
                     {badge.label}
                   </span>
-                  <span className={styles.toolSummary}>{call.summary}</span>
+                  <span className={styles.toolSummary}>
+                    <InlineMarkdown text={call.summary} />
+                  </span>
                 </button>
               )
             })}
@@ -176,7 +179,7 @@ export const TutorQuickChoices = ({
             disabled={disabled}
             onClick={() => onSelect(choice)}
           >
-            {choice}
+            <InlineMarkdown text={choice} />
           </button>
         ))}
       </div>

@@ -14,6 +14,36 @@ type MathHtmlResult = {
 
 const noop = () => {}
 
+/** 将混入公式中的 HTML 上下标/换行或常见数学实体转换为标准 LaTeX，提升兼容性 */
+const normalizeMathInput = (input: string): string => {
+  let text = input
+  if (text.includes('<')) {
+    let prev = ''
+    while (text !== prev) {
+      prev = text
+      text = text
+        .replace(/<sub\b[^>]*>([\s\S]*?)<\/sub>/gi, '_{$1}')
+        .replace(/<sup\b[^>]*>([\s\S]*?)<\/sup>/gi, '^{$1}')
+    }
+    text = text.replace(/<br\s*\/?>/gi, ' \\\\ ')
+  }
+  if (text.includes('&')) {
+    text = text
+      .replace(/&times;/gi, '\\times ')
+      .replace(/&divide;/gi, '\\div ')
+      .replace(/&plusmn;/gi, '\\pm ')
+      .replace(/&le;/gi, '\\le ')
+      .replace(/&ge;/gi, '\\ge ')
+      .replace(/&ne;/gi, '\\ne ')
+      .replace(/&approx;/gi, '\\approx ')
+      .replace(/&infin;/gi, '\\infty ')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&amp;/gi, '&')
+  }
+  return text
+}
+
 /** KaTeX 渲染公式；出错时保留上次成功的结果（流式中公式未写完），没有则展示原文 */
 const useMathHtml = (input: string, isInline: boolean): MathHtmlResult => {
   const previousResultRef = useRef<MathHtmlResult | null>(null)
@@ -32,10 +62,11 @@ const useMathHtml = (input: string, isInline: boolean): MathHtmlResult => {
     if (!katex) {
       return { html: input, renderMode: 'fallback' }
     }
+    const normalized = normalizeMathInput(input)
     try {
       const [prefix, suffix] = KATEX_WRAPPER[isInline ? 'inline' : 'display']
       const html = katex
-        .renderToString(input, { throwOnError: true, strict: false, displayMode: !isInline })
+        .renderToString(normalized, { throwOnError: true, strict: false, displayMode: !isInline })
         .slice(prefix.length, -suffix.length)
       const result = { html, renderMode: 'katex' } as const
       previousResultRef.current = result

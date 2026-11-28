@@ -1,4 +1,12 @@
-import { createElement, memo, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react'
+import {
+  createElement,
+  memo,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  type CSSProperties,
+  type ReactNode,
+} from 'react'
 import clsx from 'clsx'
 import type {
   BlockContent,
@@ -8,16 +16,78 @@ import type {
   Root,
   Table as TableNode,
 } from 'mdast'
+import type { HtmlTagNode } from '../../services/markdown/parse.js'
 import { CitationLink } from '../search/CitationLink.js'
 import { CodeBlock } from './CodeBlock.js'
 import { ImageAsLink, Link } from './Link.js'
 import { InlineMath, MathBlock } from './MathFormula.js'
 
+const BLOCK_NODE_TYPES = new Set([
+  'paragraph',
+  'heading',
+  'blockquote',
+  'thematicBreak',
+  'math',
+  'code',
+  'list',
+  'table',
+])
+
 const Html = memo(function Html({ value }: { value: string }) {
   if (/^<br\s*\/?>$/i.test(value)) {
     return <br />
   }
+  if (/^<hr\s*\/?>$/i.test(value)) {
+    return <hr />
+  }
   return <span className="ds-markdown-html">{value}</span>
+})
+
+const HtmlTag = memo(function HtmlTag({ node, loading }: { node: HtmlTagNode; loading: boolean }) {
+  const { tagName, attrs, children, isBlock } = node
+  if (tagName === 'wbr') {
+    return <wbr />
+  }
+  const hasBlockChildren =
+    isBlock ||
+    children.some(
+      (child) =>
+        BLOCK_NODE_TYPES.has(child.type) || (child.type === 'htmlTag' && Boolean(child.isBlock))
+    )
+  const content = hasBlockChildren ? (
+    <MarkdownBlockContentOrDefinitionContent
+      nodes={children as Array<BlockContent | DefinitionContent>}
+      loading={loading}
+    />
+  ) : (
+    <MarkdownPhrasingContent nodes={children as PhrasingContent[]} loading={loading} />
+  )
+  const style = attrs?.style as CSSProperties | undefined
+  if (tagName === 'center') {
+    return (
+      <div className="ds-markdown-center" style={style}>
+        {content}
+      </div>
+    )
+  }
+  if (tagName === 'font') {
+    return <span style={style}>{content}</span>
+  }
+  if (tagName === 'details') {
+    return (
+      <details className="ds-markdown-details" open={attrs?.open} style={style}>
+        {content}
+      </details>
+    )
+  }
+  return createElement(
+    tagName,
+    {
+      title: attrs?.title,
+      style,
+    },
+    content
+  )
 })
 
 const List = memo(function List({ node, loading }: { node: ListNode; loading: boolean }) {
@@ -87,15 +157,17 @@ const Table = memo(function Table({ node }: { node: TableNode }) {
   )
 })
 
-const MarkdownPhrasingContent = memo(function MarkdownPhrasingContent({
+export const MarkdownPhrasingContent = memo(function MarkdownPhrasingContent({
   nodes,
+  loading = false,
 }: {
   nodes: PhrasingContent[]
+  loading?: boolean
 }) {
   return (
     <>
       {nodes.map((node, index) => {
-        return <MarkdownPhrasingContentItem key={index} node={node} />
+        return <MarkdownPhrasingContentItem key={index} node={node} loading={loading} />
       })}
     </>
   )
@@ -103,8 +175,10 @@ const MarkdownPhrasingContent = memo(function MarkdownPhrasingContent({
 
 const MarkdownPhrasingContentItem = memo(function MarkdownPhrasingContentItem({
   node,
+  loading,
 }: {
   node: PhrasingContent
+  loading: boolean
 }) {
   switch (node.type) {
     case 'inlineMath':
@@ -114,25 +188,27 @@ const MarkdownPhrasingContentItem = memo(function MarkdownPhrasingContentItem({
     case 'emphasis':
       return (
         <em>
-          <MarkdownPhrasingContent nodes={node.children} />
+          <MarkdownPhrasingContent nodes={node.children} loading={loading} />
         </em>
       )
     case 'image':
       return <ImageAsLink node={node} />
     case 'html':
       return <Html value={node.value} />
+    case 'htmlTag':
+      return <HtmlTag node={node} loading={loading} />
     case 'inlineCode':
       return <code>{node.value}</code>
     case 'link':
       return (
         <Link node={node}>
-          <MarkdownPhrasingContent nodes={node.children} />
+          <MarkdownPhrasingContent nodes={node.children} loading={loading} />
         </Link>
       )
     case 'strong':
       return (
         <strong>
-          <MarkdownPhrasingContent nodes={node.children} />
+          <MarkdownPhrasingContent nodes={node.children} loading={loading} />
         </strong>
       )
     case 'text':
@@ -177,21 +253,26 @@ const MarkdownBlockContentOrDefinitionContent = memo(
           )
         case 'html':
           return <Html key={index} value={node.value} />
+        case 'htmlTag':
+          return <HtmlTag key={index} node={node} loading={loading} />
         case 'heading':
           return node.children.length === 0
             ? null
             : createElement(
                 `h${node.depth}`,
                 { key: index },
-                <MarkdownPhrasingContent nodes={node.children} />
+                <MarkdownPhrasingContent nodes={node.children} loading={loading} />
               )
         case 'paragraph':
           return (
             <p key={index} className="ds-markdown-paragraph">
-              <MarkdownPhrasingContent nodes={node.children} />
+              <MarkdownPhrasingContent nodes={node.children} loading={loading} />
             </p>
           )
         case 'code':
+          if (node.lang?.toLowerCase() === 'math') {
+            return <MathBlock key={index} value={node.value} />
+          }
           return (
             <CodeBlock
               key={index}
